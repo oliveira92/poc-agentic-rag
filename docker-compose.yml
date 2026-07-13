@@ -1,0 +1,51 @@
+# Infra local para a PoC: Postgres+pgvector e (opcional) Langfuse.
+# Suba só o banco:      docker compose up -d postgres
+# Suba tudo:            docker compose --profile observability up -d
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d ragdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- Langfuse (opcional): observabilidade de LLM/RAG ---
+  # Stack mínima. Para produção siga o compose oficial do Langfuse.
+  langfuse-db:
+    image: postgres:16
+    profiles: ["observability"]
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+    volumes:
+      - langfuse-pgdata:/var/lib/postgresql/data
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    profiles: ["observability"]
+    depends_on:
+      - langfuse-db
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: troque-este-segredo
+      SALT: troque-este-salt
+      TELEMETRY_ENABLED: "false"
+
+volumes:
+  pgdata:
+  langfuse-pgdata:

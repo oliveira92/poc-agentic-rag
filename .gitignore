@@ -1,0 +1,19 @@
+### Maven ###
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+### IDE ###
+.idea/
+*.iml
+.vscode/
+
+### Env / Secrets ###
+.env
+*.local.env
+
+### OS ###
+.DS_Store
+
+### Spring AI transformers cache (modelos ONNX baixados) ###
+.spring-ai/
+onnx-model-cache/

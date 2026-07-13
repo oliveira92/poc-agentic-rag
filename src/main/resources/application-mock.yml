@@ -1,0 +1,6 @@
+# Perfil "mock": roda a Fase 1 SEM o portal real.
+# Ativação:  --spring.profiles.active=mock
+# O MockComponentPortalAdapter fornece um componente de exemplo ("payments-sdk").
+component:
+  portal:
+    mode: mock

@@ -1,0 +1,100 @@
+spring:
+  application:
+    name: agentic-rag
+
+  # Java 25: virtual threads para I/O barato (portal + DB + LLM)
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ragdb}
+    username: ${DB_USERNAME:rag}
+    password: ${DB_PASSWORD:rag}
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+  ai:
+    # ---------- Chat model: Anthropic Claude ----------
+    anthropic:
+      # placeholder permite o contexto subir sem chave (ingestão/recuperação funcionam);
+      # só as chamadas de chat (advise) falham até você configurar a chave real.
+      api-key: ${ANTHROPIC_API_KEY:not-set}
+      chat:
+        options:
+          model: ${ANTHROPIC_CHAT_MODEL:claude-sonnet-4-5}
+          temperature: 0.2   # baixa: queremos precisão técnica, não criatividade
+
+    # ---------- Embeddings locais MULTILÍNGUES (ONNX) ----------
+    # paraphrase-multilingual-MiniLM-L12-v2: bom em PT-BR e ainda 384 dims
+    # (mesma dimensão do MiniLM inglês => NÃO precisa migrar o schema).
+    # Baixado do HuggingFace na 1ª subida e cacheado localmente.
+    embedding:
+      transformer:
+        onnx:
+          model-uri: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx
+          model-output-name: last_hidden_state
+        tokenizer:
+          uri: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json
+
+    # ---------- Vector store pgvector (memória de LONGO prazo) ----------
+    vectorstore:
+      pgvector:
+        initialize-schema: false   # schema é criado via Flyway (DDL explícito)
+        index-type: hnsw
+        distance-type: cosine_distance
+        dimensions: 384
+        table-name: vector_store
+
+    # ---------- Chat: memória de conversa (CURTO prazo) + observabilidade ----------
+    chat:
+      memory:
+        repository:
+          jdbc:
+            initialize-schema: never   # criado via Flyway
+      # Anexa o texto de prompt/completion aos spans. Verifique o nome exato da
+      # propriedade na versão do spring-ai que você fixar (não é fatal se ignorada).
+      client:
+        observations:
+          log-prompt: true
+      observations:
+        log-completion: true
+
+# ---------- Tracing -> OTLP -> Langfuse ----------
+management:
+  tracing:
+    sampling:
+      probability: 1.0   # PoC: amostra tudo. Em produção reduza.
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:3000/api/public/otel}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+otel:
+  exporter:
+    otlp:
+      headers: ${OTEL_EXPORTER_OTLP_HEADERS:}
+
+# ---------- App ----------
+app:
+  embedding:
+    # Id lógico do modelo de embeddings. É incluído no hash de idempotência: ao trocar
+    # o modelo (aqui e no bloco spring.ai.embedding), este id muda e força a re-ingestão
+    # (re-embed), evitando misturar vetores de modelos diferentes na mesma tabela.
+    model-id: ${APP_EMBEDDING_MODEL_ID:paraphrase-multilingual-MiniLM-L12-v2}
+
+# ---------- Portal de componentes (ACL) ----------
+component:
+  portal:
+    base-url: ${COMPONENT_PORTAL_BASE_URL:https://portal.example.com/api}
+    token: ${COMPONENT_PORTAL_TOKEN:}
+
+logging:
+  level:
+    org.springframework.ai: INFO
+    com.example.agenticrag: DEBUG
