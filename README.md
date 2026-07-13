@@ -10,7 +10,8 @@ aprovadas por um humano viram base de conhecimento (loop _human-in-the-loop_).
 > fora o que já existe. Veja [Roadmap](#roadmap-evolutivo).
 
 **Stack:** Java 25 · Spring Boot 3.5 · Spring AI 1.0 · PostgreSQL + pgvector ·
-Embeddings ONNX locais (all-MiniLM-L6-v2) · Anthropic Claude · Langfuse (OTLP).
+Embeddings ONNX locais **multilíngues** (paraphrase-multilingual-MiniLM-L12-v2, 384d) ·
+Anthropic Claude · Langfuse (OTLP).
 
 ---
 
@@ -25,9 +26,11 @@ Rodado localmente contra Postgres+pgvector real e a app no perfil `mock`:
 | Boot da app + health | ✅ `UP`, embeddings ONNX carregados |
 | Ingestão do portal (`payments-sdk`) | ✅ 3 endpoints + 1 overview + 5 chunks README = 9 docs, 384 dims |
 | Idempotência (re-ingest) | ✅ `skipped:true`, 0 docs |
-| Busca ANN (HNSW/cosine) | ✅ ranking semanticamente coerente |
+| Recuperação PT (multilíngue) | ✅ "estornar" → endpoint de refund em 1º |
 | Upload de README próprio | ✅ substitui fontes primárias, preserva o resto |
-| `/advise` (LLM) + loop de aprovação | ⏳ requer `ANTHROPIC_API_KEY` (código compila; recuperação já provada) |
+| Loop de aprovação (HITL) aprovar/rejeitar | ✅ aprovado vira `LLM_APPROVED` recuperável; rejeitado descartado |
+| Testes (6) + CI | ✅ 2 unitários + 4 integração, `BUILD SUCCESS` |
+| `/advise` — geração pela LLM | ⏳ requer `ANTHROPIC_API_KEY` (envelope + recuperação provados) |
 
 ---
 
@@ -38,7 +41,7 @@ flowchart LR
     subgraph Ingestao["Fluxo de Ingestão"]
         P[Portal de Componentes<br/>API + README] -->|ACL: ComponentPortalPort| ING[ComponentIngestionService]
         MD[README markdown enviado] --> ING
-        ING -->|chunk + metadata| EMB1[EmbeddingModel ONNX<br/>all-MiniLM-L6-v2 / 384d]
+        ING -->|chunk + metadata| EMB1[EmbeddingModel ONNX<br/>multilingual-MiniLM-L12 / 384d]
         EMB1 --> VDB[(pgvector<br/>vector_store)]
         ING --> REG[(component<br/>registry)]
     end
@@ -83,10 +86,12 @@ Misturar as duas polui a recuperação; por isso são tabelas e mecanismos disti
 - **Structured RAG, não "naive".** A fonte primária é uma API com contrato: cada
   endpoint vira um documento com **metadados filtráveis** (`kind`, `endpoint`,
   `version`), o que melhora precisão e permite filtro por componente.
-- **Embeddings locais (ONNX/MiniLM, 384d).** A Anthropic **não tem API de embeddings**.
-  Para PoC, embeddings locais = zero chave externa, reprodutível e barato. É
-  _swappable_: trocar de modelo exige **migração da dimensão do vetor** (por isso a
-  dimensão está no schema Flyway, não escondida).
+- **Embeddings locais multilíngues (ONNX, 384d).** A Anthropic **não tem API de
+  embeddings**. Uso o `paraphrase-multilingual-MiniLM-L12-v2` (bom em PT-BR) localmente:
+  zero chave externa, reprodutível e barato. Como tem a **mesma dimensão (384)** do MiniLM
+  inglês, a troca **não exigiu migração de schema**. O **id do modelo entra no hash de
+  idempotência** — trocar o modelo força a re-ingestão (re-embed), evitando misturar
+  vetores de modelos diferentes na mesma tabela.
 - **pgvector + HNSW/cosine.** Estado da arte para ANN em Postgres; um só banco para
   vetores + dados relacionais + memória de conversa reduz operação na PoC.
 - **Flyway com DDL explícito.** `initialize-schema` do Spring AI **desligado**: schema
@@ -127,27 +132,17 @@ Exporte as variáveis ou rode via IDE. Para a Fase 1 sem portal real, use o perf
 # perfil mock: fornece o componente de exemplo "payments-sdk"
 mvn -Dspring-boot.run.profiles=mock spring-boot:run
 ```
-Na 1ª subida o modelo de embeddings ONNX é baixado (~50s).
+> **1ª subida:** o modelo de embeddings multilíngue (~470 MB, vocabulário XLM-R) é baixado
+> do HuggingFace e cacheado — o primeiro boot leva **~190 s**. As próximas subidas usam o
+> cache e sobem em **~10 s**.
 
-### 4) Exercite o fluxo
+### 4) Smoke test (30s)
 ```bash
-# Ingerir componente (API + README) do portal
-curl -X POST http://localhost:8080/api/v1/components/payments-sdk/ingest
-
-# Ingerir usando um README próprio (arquivo markdown)
-curl -X POST http://localhost:8080/api/v1/components/payments-sdk/ingest/readme \
-  -H "Content-Type: text/markdown" --data-binary @CAMINHO/DO/README.md
-
-# Perguntar como consumir (precisa de ANTHROPIC_API_KEY)
-curl -X POST http://localhost:8080/api/v1/components/payments-sdk/advise \
-  -H "Content-Type: application/json" \
-  -d '{"question":"Como faço uma cobrança e trato idempotência?"}'
-
-# Ver rascunhos pendentes e aprovar (vira base de conhecimento)
-curl http://localhost:8080/api/v1/approvals/pending
-curl -X POST http://localhost:8080/api/v1/approvals/{id}/approve \
-  -H "Content-Type: application/json" -d '{"reviewer":"fernando","note":"ok"}'
+curl -s localhost:8080/actuator/health                              # {"status":"UP"}
+curl -s -X POST localhost:8080/api/v1/components/payments-sdk/ingest # ingere o mock
+curl -s "localhost:8080/api/v1/components/payments-sdk/search?q=estorno&k=3"
 ```
+O passo a passo completo, com respostas reais, está em [Uso — passo a passo](#uso--passo-a-passo-exemplos-reais).
 
 ### (Opcional) Langfuse
 ```bash
@@ -157,16 +152,151 @@ docker compose --profile observability up -d
 
 ---
 
-## API
+## Componente de exemplo (perfil `mock`)
 
-| Método | Rota | Descrição |
-|---|---|---|
-| POST | `/api/v1/components/{id}/ingest` | Ingere metadados + README do portal |
-| POST | `/api/v1/components/{id}/ingest/readme` | Ingere com README enviado (text/markdown) |
-| POST | `/api/v1/components/{id}/advise` | Pergunta como consumir; retorna resposta + citações |
-| GET  | `/api/v1/approvals/pending` | Lista respostas aguardando aprovação |
-| POST | `/api/v1/approvals/{id}/approve` | Aprova → indexa como conhecimento |
-| POST | `/api/v1/approvals/{id}/reject` | Rejeita → descarta |
+Sem portal real, o perfil `mock` fornece o componente **`payments-sdk`** (`MockComponentPortalAdapter`):
+
+| Endpoint | Descrição |
+|---|---|
+| `POST /v2/charges` | Cria cobrança (exige header `Idempotency-Key`) |
+| `GET /v2/charges/{id}` | Consulta status da cobrança |
+| `POST /v2/charges/{id}/refund` | Estorna total/parcial |
+
+README com seções: _Autenticação_, _Idempotência_, _Rate limiting_, _Erros (RFC 7807)_.
+Use esse id (`payments-sdk`) em todos os exemplos abaixo.
+
+---
+
+## Uso — passo a passo (exemplos reais)
+
+As respostas abaixo são **saídas reais** da aplicação rodando (perfil `mock`), exceto onde
+indicado. `BASE=http://localhost:8080/api/v1`.
+
+### 1. Ingerir o componente (API + README → pgvector)
+```bash
+curl -s -X POST "$BASE/components/payments-sdk/ingest"
+```
+```json
+{ "componentId": "payments-sdk", "endpointsIndexed": 3,
+  "readmeChunks": 5, "totalDocuments": 9, "skipped": false }
+```
+Reingerir sem mudança de conteúdo é **idempotente** (`"skipped": true`, `totalDocuments: 0`).
+Trocar o modelo de embeddings muda o hash e força o re-embed.
+
+### 2. Inspecionar a recuperação (sem LLM) — `search`
+Útil para ver o que a base devolve e depurar ranking **antes** de gastar chamada de LLM:
+```bash
+curl -s "$BASE/components/payments-sdk/search?q=como%20estornar%20uma%20cobran%C3%A7a&k=3"
+```
+```json
+[
+  { "index": 1, "source": "PORTAL_API", "ref": "POST /v2/charges/{id}/refund",
+    "score": 0.473, "snippet": "Endpoint ... POST /v2/charges/{id}/refund\nDescrição: Estorna total ou parcialmente..." },
+  { "index": 2, "source": "PORTAL_API", "ref": "POST /v2/charges", "score": 0.413, "snippet": "..." },
+  { "index": 3, "source": "README", "ref": "README > Rate limiting", "score": 0.413, "snippet": "100 req/s por token..." }
+]
+```
+O endpoint de estorno vem em 1º — o modelo **multilíngue** entende "estornar" ≈ "refund".
+
+### 3. Perguntar ao agente como implementar — `advise`
+Faz recuperação + gera a explicação fundamentada nas citações (**requer `ANTHROPIC_API_KEY`**).
+Passe `conversationId` para manter o fio da conversa (memória de curto prazo):
+```bash
+curl -s -X POST "$BASE/components/payments-sdk/advise" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Como faço uma cobrança e trato idempotência?",
+       "conversationId":"sessao-do-fernando-01"}'
+```
+```jsonc
+// envelope real; o texto de "answer" é ilustrativo (gerado pela LLM)
+{
+  "componentId": "payments-sdk",
+  "conversationId": "sessao-do-fernando-01",
+  "answer": "Para criar uma cobrança:\n1. Autentique com `Authorization: Bearer <token>` [1].\n2. Envie POST /v2/charges com um header `Idempotency-Key` (UUID); reenvios com a mesma chave retornam a cobrança original [2].\n...",
+  "citations": [
+    { "index": 1, "source": "README", "ref": "README > Autenticação", "score": 0.55, "snippet": "..." },
+    { "index": 2, "source": "PORTAL_API", "ref": "POST /v2/charges", "score": 0.41, "snippet": "..." }
+  ],
+  "grounded": true,
+  "approvalId": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+}
+```
+- `grounded=false` indica que **nada foi recuperado** (componente não ingerido) — a resposta sai fraca e o `answer` avisa o que falta.
+- `approvalId` é o rascunho salvo automaticamente para o passo 4.
+
+### 4. Aprovar a resposta → realimentar a base (HITL)
+```bash
+curl -s "$BASE/approvals/pending"                       # lista rascunhos PENDING
+curl -s -X POST "$BASE/approvals/{approvalId}/approve" \
+  -H "Content-Type: application/json" \
+  -d '{"reviewer":"fernando","note":"validado com a doc"}'
+```
+```json
+{
+  "id": "11111111-1111-1111-1111-111111111111",
+  "componentId": "payments-sdk",
+  "question": "Como faço uma cobrança e trato idempotência?",
+  "answer": "Use POST /v2/charges enviando o header Idempotency-Key ...",
+  "status": "APPROVED",
+  "reviewer": "fernando",
+  "reviewNote": "validado com a doc",
+  "createdAt": "2026-07-13T23:30:41Z",
+  "reviewedAt": "2026-07-13T23:30:41Z",
+  "vectorDocId": "b22aaad9-c839-4949-9447-e17505a18698"
+}
+```
+Rejeitar (não indexa): `POST $BASE/approvals/{id}/reject` com o mesmo corpo.
+
+### 5. Conhecimento aprovado passa a ser recuperável
+```bash
+curl -s "$BASE/components/payments-sdk/search?q=reenvio%20com%20a%20mesma%20chave%20de%20idempot%C3%AAncia&k=4"
+```
+```
+[1] score=0.520 README        README > Idempotência
+[2] score=0.428 LLM_APPROVED  qa            ← o Q&A aprovado no passo 4
+[3] score=0.332 README        README > Rate limiting
+[4] score=0.296 PORTAL_API    POST /v2/charges
+```
+Fontes primárias (`PORTAL_API`/`README`) têm **precedência** sobre `LLM_APPROVED` em conflito.
+
+### (Alternativa ao passo 1) Ingerir com um README próprio
+```bash
+curl -s -X POST "$BASE/components/payments-sdk/ingest/readme" \
+  -H "Content-Type: text/markdown" --data-binary @./MEU_README.md
+```
+Usa os metadados estruturados do portal + o README enviado (substitui as fontes primárias,
+preserva o conhecimento aprovado).
+
+---
+
+## Referência da API
+
+Base: `/api/v1`. Erros seguem **RFC 7807** (`application/problem+json`): 404 (não encontrado),
+409 (aprovação já revisada), 400 (validação).
+
+### `POST /components/{id}/ingest`
+Ingere metadados + README do portal. **Body:** nenhum. **200:** `IngestionResult`
+`{componentId, endpointsIndexed, readmeChunks, totalDocuments, skipped}`. **404:** id inexistente no portal.
+
+### `POST /components/{id}/ingest/readme`
+Ingere com README enviado. **Content-Type:** `text/markdown` (ou `text/plain`).
+**Body:** o markdown cru. **200:** `IngestionResult`.
+
+### `POST /components/{id}/advise`
+Pergunta como consumir. **Body:** `{ "question": "…" (obrigatório), "conversationId": "…" (opcional) }`.
+**200:** `AdviceResult` `{componentId, conversationId, answer, citations[], grounded, approvalId}`.
+Requer `ANTHROPIC_API_KEY`.
+
+### `GET /components/{id}/search`
+Recuperação pura, sem LLM. **Query:** `q` (consulta, obrigatório), `k` (top-K, default 5).
+**200:** lista de `Citation` `{index, source, ref, score, snippet}`.
+
+### `GET /approvals/pending`
+Lista rascunhos `PENDING`. **200:** lista de `ApprovalRecord`.
+
+### `POST /approvals/{id}/approve` · `POST /approvals/{id}/reject`
+Aprova (indexa como `LLM_APPROVED`) ou rejeita (descarta). **Body (opcional):**
+`{ "reviewer": "…", "note": "…" }`. **200:** `ApprovalRecord` atualizado. **409:** já revisado.
 
 ---
 
@@ -191,11 +321,9 @@ Cada fase entrega valor e reaproveita a anterior (mapeada aos 8 padrões de RAG)
    Se a empresa exige **Azure OpenAI**, é troca de _starter_ + config (o domínio não muda).
 2. **Portal real.** O `RestClientComponentPortalAdapter` é um esqueleto — ajuste o
    mapeamento ao **OpenAPI** do seu portal (autenticação, caminhos, schema).
-3. **Modelo de embeddings.** MiniLM (384d) é ótimo para PoC, mas é **focado em inglês** —
-   os testes mostraram ranking fraco para consultas em **português** (chunks de README
-   acima do endpoint certo). Para produção/PT avalie um modelo **multilíngue**
-   (ex.: `paraphrase-multilingual-MiniLM-L12-v2`, 384d, mesma dimensão) ou hospedado.
-   Isso motiva o **rerank da Fase 2**.
+3. **Modelo de embeddings.** ✅ Já usando o **multilíngue** `paraphrase-multilingual-MiniLM-L12-v2`
+   (384d). Verificado: a consulta PT "estornar" passou a recuperar o endpoint de refund
+   em **1º lugar** (antes, com o MiniLM inglês, ficava fora do top-3). Rerank fica para a Fase 2.
 
 ### Rodando os testes localmente
 CI usa Testcontainers. Neste ambiente o Docker Engine 29.x responde 400 ao docker-java,

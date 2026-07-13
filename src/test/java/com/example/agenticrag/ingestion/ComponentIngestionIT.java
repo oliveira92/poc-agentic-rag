@@ -31,20 +31,23 @@ class ComponentIngestionIT extends AbstractIntegrationTest {
         // Idempotência: reingestão do mesmo conteúdo não reprocessa.
         assertThat(ingestion.ingestFromPortal("payments-sdk").skipped()).isTrue();
 
-        // Recuperação filtrada pelo componente. Este IT valida o PIPELINE (escopo +
-        // indexação + recall), não a QUALIDADE de ranking do modelo de embeddings
-        // (limitada em PT com o all-MiniLM-L6-v2; ver Fase 2 no README).
-        List<Document> docs = vectorStore.similaritySearch(SearchRequest.builder()
-                .query("como consumir cobranças e estornos deste componente")
+        // Escopo: o filtro por componente só devolve documentos do payments-sdk.
+        List<Document> scoped = vectorStore.similaritySearch(SearchRequest.builder()
+                .query("componente de pagamentos")
                 .topK(20)
                 .filterExpression("component_id == 'payments-sdk'")
                 .build());
+        assertThat(scoped).isNotEmpty();
+        assertThat(scoped).allMatch(d -> "payments-sdk".equals(d.getMetadata().get("component_id")));
 
-        // escopo: só retornam documentos do componente filtrado
-        assertThat(docs).isNotEmpty();
-        assertThat(docs).allMatch(d -> "payments-sdk".equals(d.getMetadata().get("component_id")));
-        // recall: o endpoint de estorno foi indexado e é recuperável
-        assertThat(docs).anyMatch(d -> String.valueOf(d.getMetadata().get("endpoint")).contains("refund"));
+        // Ranking em PT-BR (regressão do modelo multilíngue): a consulta "estornar"
+        // recupera o endpoint de refund no TOP-3. Isto reprovava com o MiniLM inglês.
+        List<Document> pt = vectorStore.similaritySearch(SearchRequest.builder()
+                .query("como faço para estornar uma cobrança")
+                .topK(3)
+                .filterExpression("component_id == 'payments-sdk'")
+                .build());
+        assertThat(pt).anyMatch(d -> String.valueOf(d.getMetadata().get("endpoint")).contains("refund"));
     }
 
     @Test

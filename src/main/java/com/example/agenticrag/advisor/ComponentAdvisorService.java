@@ -52,19 +52,26 @@ public class ComponentAdvisorService {
         this.approvals = approvals;
     }
 
-    public AdviceResult advise(String componentId, String question, String conversationId) {
-        String cid = StringUtils.hasText(conversationId) ? conversationId : UUID.randomUUID().toString();
+    /**
+     * Recuperação semântica pura (sem LLM): retorna as citações do componente para uma
+     * consulta. Útil para transparência/inspeção e reaproveitado pelo {@link #advise}.
+     */
+    public List<Citation> retrieve(String componentId, String question, int topK) {
         String safeComponentId = requireSafe(componentId);
-
-        // 1) Recuperação semântica filtrada pelo componente (memória de longo prazo)
         List<Document> docs = vectorStore.similaritySearch(SearchRequest.builder()
                 .query(question)
-                .topK(TOP_K)
+                .topK(topK)
                 .filterExpression("component_id == '" + safeComponentId + "'")
                 .build());
+        return toCitations(docs);
+    }
 
-        boolean grounded = !docs.isEmpty();
-        List<Citation> citations = toCitations(docs);
+    public AdviceResult advise(String componentId, String question, String conversationId) {
+        String cid = StringUtils.hasText(conversationId) ? conversationId : UUID.randomUUID().toString();
+
+        // 1) Recuperação semântica filtrada pelo componente (memória de longo prazo)
+        List<Citation> citations = retrieve(componentId, question, TOP_K);
+        boolean grounded = !citations.isEmpty();
         String context = buildContext(citations);
 
         // 2) Geração ancorada no contexto + memória de curto prazo (advisor padrão do ChatClient)
