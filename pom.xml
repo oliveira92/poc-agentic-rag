@@ -9,16 +9,15 @@
       PoC Agentic RAG - Component Advisor
       Fase 1: Structured RAG + Ingestão + Memória + Aprovação (HITL)
       ================================================================
-      NOTA DE VERSÕES: Java 25 exige Spring Boot >= 3.5.x recente.
-      Os artifactId do Spring AI seguem o padrão 1.0 GA
-      (spring-ai-starter-model-*). Se você fixar outra versão do
-      spring-ai-bom, confira os nomes dos starters no site oficial.
+      NOTA DE VERSÕES: Spring Boot 4.0 (Spring Framework 7 / Jakarta EE 11) exige Java 17+.
+      Spring AI 2.0.0 é a linha compatível com Spring Boot 4 (depende de spring-context 7.x).
+      Os artifactId do Spring AI seguem o padrão spring-ai-starter-model-*.
     -->
 
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.6</version>
+        <version>4.0.7</version>
         <relativePath/>
     </parent>
 
@@ -30,7 +29,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>1.0.1</spring-ai.version>
+        <spring-ai.version>2.0.0</spring-ai.version>
     </properties>
 
     <dependencyManagement>
@@ -66,9 +65,12 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Boot 4 modularizou as auto-configs: FlywayAutoConfiguration está em
+             spring-boot-flyway (não mais no spring-boot-autoconfigure monolítico).
+             Este módulo traz flyway-core transitivamente. -->
         <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
@@ -124,9 +126,11 @@
             <artifactId>spring-boot-testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Testcontainers 2.0 (alinhado ao Boot 4): módulos ganharam o prefixo
+             'testcontainers-'. A classe PostgreSQLContainer segue em org.testcontainers.containers. -->
         <dependency>
             <groupId>org.testcontainers</groupId>
-            <artifactId>postgresql</artifactId>
+            <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

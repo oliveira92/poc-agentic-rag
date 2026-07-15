@@ -24,8 +24,10 @@ spring:
       api-key: ${ANTHROPIC_API_KEY:not-set}
       chat:
         options:
-          model: ${ANTHROPIC_CHAT_MODEL:claude-sonnet-4-5}
-          temperature: 0.2   # baixa: queremos precisão técnica, não criatividade
+          # Spring AI 2.0 NÃO envia mais um 'temperature' default — então a família Claude 5
+          # (que deprecou o parâmetro) volta a funcionar. Use um id EXATO da sua conta
+          # (GET /v1/models). Para forçar temperature, adicione: temperature: 0.2
+          model: ${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}
 
     # ---------- Embeddings locais MULTILÍNGUES (ONNX) ----------
     # paraphrase-multilingual-MiniLM-L12-v2: bom em PT-BR e ainda 384 dims
@@ -62,23 +64,24 @@ spring:
       observations:
         log-completion: true
 
-# ---------- Tracing -> OTLP -> Langfuse ----------
+# ---------- Tracing -> OTLP -> Langfuse (v3) ----------
 management:
   tracing:
     sampling:
       probability: 1.0   # PoC: amostra tudo. Em produção reduza.
   otlp:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:3000/api/public/otel}
+      # IMPORTANTE: o endpoint do Spring Boot é o caminho COMPLETO (com /v1/traces).
+      # O ingest OTLP do Langfuse v3 fica em /api/public/otel/v1/traces.
+      endpoint: ${LANGFUSE_OTEL_ENDPOINT:http://localhost:3000/api/public/otel/v1/traces}
+      headers:
+        # Basic base64(publicKey:secretKey) das chaves do projeto no Langfuse.
+        # Vazio = traces não são aceitos (401, apenas warnings) até você configurar.
+        Authorization: ${LANGFUSE_OTEL_AUTH:}
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
-
-otel:
-  exporter:
-    otlp:
-      headers: ${OTEL_EXPORTER_OTLP_HEADERS:}
 
 # ---------- App ----------
 app:

@@ -9,9 +9,9 @@ aprovadas por um humano viram base de conhecimento (loop _human-in-the-loop_).
 > validada ponta a ponta. As fases 2–4 evoluem até o padrão _Agentic RAG_ sem jogar
 > fora o que já existe. Veja [Roadmap](#roadmap-evolutivo).
 
-**Stack:** Java 25 · Spring Boot 3.5 · Spring AI 1.0 · PostgreSQL + pgvector ·
-Embeddings ONNX locais **multilíngues** (paraphrase-multilingual-MiniLM-L12-v2, 384d) ·
-Anthropic Claude · Langfuse (OTLP).
+**Stack:** Java 25 · **Spring Boot 4.0** (Spring Framework 7) · **Spring AI 2.0** ·
+PostgreSQL + pgvector · Embeddings ONNX locais **multilíngues**
+(paraphrase-multilingual-MiniLM-L12-v2, 384d) · Anthropic Claude · Langfuse v3 (OTLP).
 
 ---
 
@@ -21,8 +21,9 @@ Rodado localmente contra Postgres+pgvector real e a app no perfil `mock`:
 
 | Verificação | Resultado |
 |---|---|
-| `mvn compile` (Spring Boot 3.5.6 + Spring AI 1.0.1, Java 25) | ✅ BUILD SUCCESS |
-| Flyway V1+V2 aplicadas no pgvector (PG 17) | ✅ extensões, `vector(384)`, HNSW, tabelas |
+| Build (Spring Boot 4.0.7 + Spring AI 2.0.0, Java 25) | ✅ `BUILD SUCCESS` + 6 testes verdes |
+| Flyway V1+V2+V3 no pgvector (PG 17) | ✅ extensões, `vector(384)`, HNSW, `sequence_id` (Spring AI 2.0) |
+| `/advise` real com **claude-sonnet-5** (Boot 4) | ✅ funciona — Spring AI 2.0 não força mais `temperature` |
 | Boot da app + health | ✅ `UP`, embeddings ONNX carregados |
 | Ingestão do portal (`payments-sdk`) | ✅ 3 endpoints + 1 overview + 5 chunks README = 9 docs, 384 dims |
 | Idempotência (re-ingest) | ✅ `skipped:true`, 0 docs |
@@ -30,7 +31,9 @@ Rodado localmente contra Postgres+pgvector real e a app no perfil `mock`:
 | Upload de README próprio | ✅ substitui fontes primárias, preserva o resto |
 | Loop de aprovação (HITL) aprovar/rejeitar | ✅ aprovado vira `LLM_APPROVED` recuperável; rejeitado descartado |
 | Testes (6) + CI | ✅ 2 unitários + 4 integração, `BUILD SUCCESS` |
-| `/advise` — geração pela LLM | ⏳ requer `ANTHROPIC_API_KEY` (envelope + recuperação provados) |
+| `/advise` — geração pela LLM (real, Sonnet 4.5) | ✅ resposta fundamentada com citações `[n]` |
+| Memória de curto prazo (real) | ✅ acompanhamento lembra o turno anterior |
+| Loop HITL com resposta real | ✅ aprovar → `LLM_APPROVED` recuperável |
 
 ---
 
@@ -127,6 +130,14 @@ cp .env.example .env   # edite ANTHROPIC_API_KEY (necessária só para /advise)
 ```
 Exporte as variáveis ou rode via IDE. Para a Fase 1 sem portal real, use o perfil `mock`.
 
+> **Atenção (aprendido em teste real):**
+> - O Spring Boot **não lê `.env` sozinho** — carregue antes de subir:
+>   `set -a; source <(grep -vE '^\s*#|OTEL_EXPORTER_OTLP_HEADERS' .env); set +a`
+> - Use um **id de modelo exato** da sua conta (`GET https://api.anthropic.com/v1/models`).
+> - **`temperature` + Claude 5:** o Spring AI **2.0** não envia mais um `temperature` default,
+>   então a família **Claude 5** (que deprecou o parâmetro) funciona — o default aqui é
+>   **`claude-sonnet-5`**. (No Spring AI 1.x isso dava HTTP 400 e exigia um modelo 4.x.)
+
 ### 3) Rode a aplicação
 ```bash
 # perfil mock: fornece o componente de exemplo "payments-sdk"
@@ -144,11 +155,28 @@ curl -s "localhost:8080/api/v1/components/payments-sdk/search?q=estorno&k=3"
 ```
 O passo a passo completo, com respostas reais, está em [Uso — passo a passo](#uso--passo-a-passo-exemplos-reais).
 
-### (Opcional) Langfuse
+### (Opcional) Observabilidade com Langfuse v3
+O Langfuse v3 **não é um container só**: precisa de Postgres + **ClickHouse** (traces) +
+**Redis** (fila) + **MinIO/S3** (blobs). Tudo isso está no perfil `observability`.
+
 ```bash
+# 1) Sobe o stack completo (langfuse-web, worker, clickhouse, redis, minio, postgres)
 docker compose --profile observability up -d
-# configure OTEL_EXPORTER_OTLP_ENDPOINT e OTEL_EXPORTER_OTLP_HEADERS (Basic base64(pk:sk))
+
+# 2) Aguarde o web ficar pronto (roda migrações no 1º boot)
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/public/health   # 200
+
+# 3) Abra http://localhost:3000 → crie conta + organização + projeto
+# 4) Copie as chaves do projeto e gere o header Basic:
+echo -n "pk-lf-SEU_PUBLIC:sk-lf-SEU_SECRET" | base64
+
+# 5) No .env, preencha e recarregue antes de subir a app:
+#    LANGFUSE_OTEL_ENDPOINT="http://localhost:3000/api/public/otel/v1/traces"
+#    LANGFUSE_OTEL_AUTH="Basic <base64 do passo 4>"
 ```
+Com isso, cada ingestão/recuperação/chamada de LLM aparece como um _trace_ no Langfuse
+(Spring AI emite spans via Micrometer → OTLP). Os segredos do compose são **de dev** —
+troque para qualquer uso real.
 
 ---
 
