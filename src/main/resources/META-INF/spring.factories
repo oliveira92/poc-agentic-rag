@@ -1,0 +1,4 @@
+# Boot 4 registra EnvironmentPostProcessor via spring.factories sob esta chave
+# (interface org.springframework.boot.EnvironmentPostProcessor).
+org.springframework.boot.EnvironmentPostProcessor=\
+  com.example.agenticrag.config.DotenvEnvironmentPostProcessor

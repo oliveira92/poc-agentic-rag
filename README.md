@@ -128,15 +128,15 @@ docker compose up -d postgres
 ```bash
 cp .env.example .env   # edite ANTHROPIC_API_KEY (necessária só para /advise)
 ```
-Exporte as variáveis ou rode via IDE. Para a Fase 1 sem portal real, use o perfil `mock`.
+O **`.env` é carregado automaticamente** no boot (por um `EnvironmentPostProcessor` próprio) —
+**não precisa dar `source`**. Variáveis reais do ambiente ou `-D` têm precedência sobre o `.env`.
+Para a Fase 1 sem portal real, use o perfil `mock`.
 
-> **Atenção (aprendido em teste real):**
-> - O Spring Boot **não lê `.env` sozinho** — carregue antes de subir:
->   `set -a; source <(grep -vE '^\s*#|OTEL_EXPORTER_OTLP_HEADERS' .env); set +a`
+> **Dicas:**
 > - Use um **id de modelo exato** da sua conta (`GET https://api.anthropic.com/v1/models`).
 > - **`temperature` + Claude 5:** o Spring AI **2.0** não envia mais um `temperature` default,
->   então a família **Claude 5** (que deprecou o parâmetro) funciona — o default aqui é
->   **`claude-sonnet-5`**. (No Spring AI 1.x isso dava HTTP 400 e exigia um modelo 4.x.)
+>   então a família **Claude 5** funciona — o default aqui é **`claude-sonnet-5`**.
+> - O caminho do arquivo pode ser trocado com `-Ddotenv.path=/outro/.env`.
 
 ### 3) Rode a aplicação
 ```bash
