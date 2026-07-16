@@ -167,16 +167,15 @@ docker compose --profile observability up -d
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/public/health   # 200
 
 # 3) Abra http://localhost:3000 → crie conta + organização + projeto
-# 4) Copie as chaves do projeto e gere o header Basic:
-echo -n "pk-lf-SEU_PUBLIC:sk-lf-SEU_SECRET" | base64
-
-# 5) No .env, preencha e recarregue antes de subir a app:
-#    LANGFUSE_OTEL_ENDPOINT="http://localhost:3000/api/public/otel/v1/traces"
-#    LANGFUSE_OTEL_AUTH="Basic <base64 do passo 4>"
+# 4) Copie as chaves do projeto para o .env (a app faz o base64 do header sozinha):
+#    LANGFUSE_PUBLIC_KEY=pk-lf-...
+#    LANGFUSE_SECRET_KEY=sk-lf-...
+#    LANGFUSE_BASE_URL="http://localhost:3000"
 ```
-Com isso, cada ingestão/recuperação/chamada de LLM aparece como um _trace_ no Langfuse
-(Spring AI emite spans via Micrometer → OTLP). Os segredos do compose são **de dev** —
-troque para qualquer uso real.
+A app monta o endpoint OTLP a partir de `LANGFUSE_BASE_URL` (application.yml) e computa o
+header `Authorization: Basic base64(pk:sk)` em `AgenticRagApplication.main()`. Com isso, cada
+ingestão/recuperação/chamada de LLM aparece como um _trace_ no Langfuse (Spring AI emite
+spans via Micrometer → OTLP). Os segredos do compose são **de dev** — troque para uso real.
 
 ---
 

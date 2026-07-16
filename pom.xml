@@ -106,13 +106,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Boot 4 modularizou o tracing: o autoconfig de OTLP (OtlpTracingAutoConfiguration)
+             vive em módulos dedicados. Este starter agrega o bridge Micrometer->OpenTelemetry,
+             o SDK OTel e o exporter OTLP — sem ele, os spans NÃO são exportados. -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.opentelemetry</groupId>
-            <artifactId>opentelemetry-exporter-otlp</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
 
         <!-- Testes -->

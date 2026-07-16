@@ -69,15 +69,22 @@ management:
   tracing:
     sampling:
       probability: 1.0   # PoC: amostra tudo. Em produção reduza.
-  otlp:
+  # Boot 4 moveu as propriedades OTLP de tracing de 'management.otlp.tracing.*' (Boot 3)
+  # para 'management.opentelemetry.tracing.export.otlp.*'.
+  opentelemetry:
     tracing:
-      # IMPORTANTE: o endpoint do Spring Boot é o caminho COMPLETO (com /v1/traces).
-      # O ingest OTLP do Langfuse v3 fica em /api/public/otel/v1/traces.
-      endpoint: ${LANGFUSE_OTEL_ENDPOINT:http://localhost:3000/api/public/otel/v1/traces}
-      headers:
-        # Basic base64(publicKey:secretKey) das chaves do projeto no Langfuse.
-        # Vazio = traces não são aceitos (401, apenas warnings) até você configurar.
-        Authorization: ${LANGFUSE_OTEL_AUTH:}
+      export:
+        otlp:
+          # Endpoint montado a partir de LANGFUSE_BASE_URL (caminho OTLP do Langfuse v3).
+          # O header Basic Authorization é computado de LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY
+          # em AgenticRagApplication.main() (placeholder não faz base64).
+          endpoint: ${LANGFUSE_BASE_URL:http://localhost:3000}/api/public/otel/v1/traces
+  # Só queremos TRACES no Langfuse. O starter também traz o export de métricas OTLP
+  # (default :4318); desligamos para não poluir o log com falhas de conexão.
+  otlp:
+    metrics:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
