@@ -98,6 +98,62 @@ app:
     # (re-embed), evitando misturar vetores de modelos diferentes na mesma tabela.
     model-id: ${APP_EMBEDDING_MODEL_ID:paraphrase-multilingual-MiniLM-L12-v2}
 
+  # ---------- M03 · Camada 5 (Governança): roteamento por risco ----------
+  # "Aliases de negócio → modelo real" (A05). Por padrão os três apontam para o mesmo
+  # modelo (comportamento inalterado). Aponte fast-model p/ um modelo mais barato e o
+  # roteamento por custo entra em ação (gráfico "−44%" da aula), mantendo o forte no risco.
+  routing:
+    strong-model: ${APP_ROUTING_STRONG_MODEL:${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}}
+    fast-model: ${APP_ROUTING_FAST_MODEL:${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}}
+    default-model: ${APP_ROUTING_DEFAULT_MODEL:${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}}
+    threshold-high: 0.90       # SLO de groundedness da rota de risco (jurídico/pagamento)
+    threshold-default: 0.80
+
+  # ---------- M03 · Camada 3 (Qualidade): juiz de groundedness ----------
+  quality:
+    judge: ${APP_QUALITY_JUDGE:mock}   # mock (default, roda no CI sem chave) | llm (LLM-as-judge)
+    gate:
+      trap-floor: 0.35        # score de similaridade abaixo do qual "nada foi recuperado" (armadilhas)
+      min-pass-rate: 0.75     # taxa mínima de aprovação do golden set para o gate passar
+      top-k: 6
+
+  # ---------- M03 · Camada 4 (Negócio): custo por token ----------
+  # Preço por 1k tokens para estimar custo/chamada (custo mora nos tokens — A04).
+  # Ajuste para os preços reais do seu provedor/moeda; 0 = não estima.
+  cost:
+    currency: ${APP_COST_CURRENCY:USD}
+    input-per-1k: ${APP_COST_INPUT_PER_1K:0.0}
+    output-per-1k: ${APP_COST_OUTPUT_PER_1K:0.0}
+
+  # ---------- Seleção de modelos Anthropic (governança de modelo — A05) ----------
+  # O catálogo é a allow-list VERSIONADA de modelos que o /advise aceita no campo "model".
+  # Com live-sync=true, GET /api/v1/models também lista os modelos REAIS da conta
+  # (Anthropic /v1/models) — a fonte da verdade dos ids exatos. allow-any=true desliga a
+  # validação (para contas com ids fora do catálogo). Os ids abaixo são os padrões atuais;
+  # ajuste para os ids exatos da SUA conta (a listagem ao vivo mostra quais existem).
+  models:
+    allow-any: ${APP_MODELS_ALLOW_ANY:false}
+    live-sync: ${APP_MODELS_LIVE_SYNC:true}
+    base-url: ${APP_MODELS_BASE_URL:https://api.anthropic.com}
+    cache-ttl: ${APP_MODELS_CACHE_TTL:PT30M}
+    catalog:
+      - id: claude-opus-4-8
+        label: "Claude Opus 4.8"
+        tier: forte
+        description: "Máxima capacidade — análise difícil, rotas de risco alto."
+      - id: claude-sonnet-5
+        label: "Claude Sonnet 5"
+        tier: forte
+        description: "Forte e equilibrado — default para integração e risco."
+      - id: claude-sonnet-4-5
+        label: "Claude Sonnet 4.5"
+        tier: default
+        description: "Geração anterior do Sonnet — aceita 'temperature'."
+      - id: claude-haiku-4-5
+        label: "Claude Haiku 4.5"
+        tier: rapido
+        description: "Rápido e barato — FAQ/atendimento de baixo risco."
+
 # ---------- Portal de componentes (ACL) ----------
 component:
   portal:

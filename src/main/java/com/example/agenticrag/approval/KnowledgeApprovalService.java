@@ -4,6 +4,7 @@ import com.example.agenticrag.domain.model.ApprovalRecord;
 import com.example.agenticrag.domain.model.ApprovalStatus;
 import com.example.agenticrag.domain.model.KnowledgeSource;
 import com.example.agenticrag.infra.persistence.KnowledgeApprovalRepository;
+import com.example.agenticrag.observability.RagMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -29,10 +30,12 @@ public class KnowledgeApprovalService {
 
     private final KnowledgeApprovalRepository repository;
     private final VectorStore vectorStore;
+    private final RagMetrics metrics;
 
-    public KnowledgeApprovalService(KnowledgeApprovalRepository repository, VectorStore vectorStore) {
+    public KnowledgeApprovalService(KnowledgeApprovalRepository repository, VectorStore vectorStore, RagMetrics metrics) {
         this.repository = repository;
         this.vectorStore = vectorStore;
+        this.metrics = metrics;
     }
 
     public List<ApprovalRecord> listPending() {
@@ -56,6 +59,7 @@ public class KnowledgeApprovalService {
         vectorStore.add(List.of(doc));
 
         repository.markApproved(id, reviewer, note, doc.getId());
+        metrics.recordHitl("approved");
         log.info("Aprovação {} indexada (docId={}, componente={}).", id, doc.getId(), record.componentId());
         return load(id);
     }
@@ -63,6 +67,7 @@ public class KnowledgeApprovalService {
     public ApprovalRecord reject(UUID id, String reviewer, String note) {
         requirePending(load(id));
         repository.markRejected(id, reviewer, note);
+        metrics.recordHitl("rejected");
         return load(id);
     }
 

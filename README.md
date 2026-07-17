@@ -112,6 +112,34 @@ Misturar as duas polui a recuperação; por isso são tabelas e mecanismos disti
 
 ---
 
+## Observabilidade e Qualidade (M03 — as 5 camadas)
+
+A Fase 1 foi **instrumentada com as 5 camadas** do módulo _Observabilidade e Qualidade_ (M03),
+**sem mudar o conceito** do Structured RAG. O plano completo (SLOs, KPIs, rúbrica e roteiro de
+demo) está em **[docs/PLANO-OBSERVABILIDADE-QUALIDADE.md](docs/PLANO-OBSERVABILIDADE-QUALIDADE.md)**.
+
+| Camada | O que foi aplicado | Onde |
+|---|---|---|
+| **1 · Observar** | spans enriquecidos (`gen_ai.*`, `rag.route/risk`), eventos (`ungrounded`, `low_confidence`, `user_feedback`), `traceId` no envelope | `ComponentAdvisorService` → OTLP/Langfuse |
+| **2 · Técnica** | SLIs `rag.*` (latência p50/p95/p99, tokens, custo, erros por `model`/`route`), SLO por rota | `RagMetrics` → `/actuator/prometheus` |
+| **3 · Qualidade** | guardrail anti-alucinação (determinístico) + LLM-as-judge (mock/llm) + golden set | `quality/*`, `golden/payments-sdk.csv` |
+| **4 · Negócio** | CSAT 👍/👎 ligado ao trace, KPIs (canvas), north-star _time-to-first-successful-call_ | `FeedbackController` |
+| **5 · Governança** | quality gate no CI ("O Portão"), roteamento por risco (alias→modelo) | `quality-gate.yml`, `RouteClassifier` |
+
+Decisões registradas em ADRs: [docs/adr/](docs/adr/). Checklist de produção + evidências LGPD:
+[docs/CHECKLIST-PRODUCAO.md](docs/CHECKLIST-PRODUCAO.md).
+
+> **Roteamento e comportamento inalterados por default:** os três aliases de modelo
+> (`app.routing.{strong,fast,default}-model`) apontam para o mesmo modelo; aponte `fast-model`
+> para um modelo mais barato e o roteamento por custo entra em ação. O juiz de qualidade roda
+> em **mock** por padrão (sem chave); `app.quality.judge=llm` liga o juiz real.
+>
+> **Seleção de modelo por chamada:** `GET /api/v1/models` lista os modelos aceitos (catálogo
+> versionado em `app.models` + descoberta ao vivo da conta); passe `model` no `POST /advise`
+> para escolher — ele tem precedência sobre o roteamento. Ver [ADR-0006](docs/adr/0006-selecao-de-modelos-anthropic.md).
+
+---
+
 ## Como rodar
 
 ### Pré-requisitos
@@ -227,7 +255,8 @@ O endpoint de estorno vem em 1º — o modelo **multilíngue** entende "estornar
 
 ### 3. Perguntar ao agente como implementar — `advise`
 Faz recuperação + gera a explicação fundamentada nas citações (**requer `ANTHROPIC_API_KEY`**).
-Passe `conversationId` para manter o fio da conversa (memória de curto prazo):
+Passe `conversationId` para manter o fio da conversa (memória de curto prazo) e, opcionalmente,
+`model` para escolher o modelo (senão o roteamento por risco decide; ids em `GET /api/v1/models`):
 ```bash
 curl -s -X POST "$BASE/components/payments-sdk/advise" \
   -H "Content-Type: application/json" \
@@ -245,13 +274,35 @@ curl -s -X POST "$BASE/components/payments-sdk/advise" \
     { "index": 2, "source": "PORTAL_API", "ref": "POST /v2/charges", "score": 0.41, "snippet": "..." }
   ],
   "grounded": true,
-  "approvalId": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+  "approvalId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "traceId": "e13307a825da01a2e9ee4a6c9af21327",
+  "route": "risco",
+  "model": "claude-sonnet-5",
+  "lowConfidence": false,
+  "unsupportedEndpoints": []
 }
 ```
 - `grounded=false` indica que **nada foi recuperado** (componente não ingerido) — a resposta sai fraca e o `answer` avisa o que falta.
-- `approvalId` é o rascunho salvo automaticamente para o passo 4.
+- `approvalId` é o rascunho salvo automaticamente para o passo 5 (HITL).
+- **M03:** `traceId` correlaciona a resposta a logs/métricas e ao feedback (passo 4); `route`/`model`
+  mostram o roteamento por risco; `lowConfidence=true` (+ `unsupportedEndpoints`) sinaliza o
+  guardrail anti-alucinação quando o texto cita um endpoint fora das fontes.
 
-### 4. Aprovar a resposta → realimentar a base (HITL)
+### 4. Avaliar a resposta (CSAT 👍/👎) — `feedback` · camada 4 do M03
+O cliente pontua a resposta; o feedback vira um SLI de satisfação (`rag.csat`) e um evento no
+trace. Reenvie o `route` e o `traceId` recebidos no passo 3 para correlacionar:
+```bash
+curl -s -X POST "$BASE/components/payments-sdk/feedback" \
+  -H "Content-Type: application/json" \
+  -d '{"value":1,"route":"risco","traceId":"e13307a825da01a2e9ee4a6c9af21327"}'
+```
+```json
+{ "componentId": "payments-sdk", "route": "risco", "recorded": true }
+```
+`value`: `1` = 👍, `0` = 👎. O CSAT sai por rota e fica ligado a cada conversa (mesma mecânica do
+score de qualidade, mas quem pontua é o usuário).
+
+### 5. Aprovar a resposta → realimentar a base (HITL)
 ```bash
 curl -s "$BASE/approvals/pending"                       # lista rascunhos PENDING
 curl -s -X POST "$BASE/approvals/{approvalId}/approve" \
@@ -274,13 +325,13 @@ curl -s -X POST "$BASE/approvals/{approvalId}/approve" \
 ```
 Rejeitar (não indexa): `POST $BASE/approvals/{id}/reject` com o mesmo corpo.
 
-### 5. Conhecimento aprovado passa a ser recuperável
+### 6. Conhecimento aprovado passa a ser recuperável
 ```bash
 curl -s "$BASE/components/payments-sdk/search?q=reenvio%20com%20a%20mesma%20chave%20de%20idempot%C3%AAncia&k=4"
 ```
 ```
 [1] score=0.520 README        README > Idempotência
-[2] score=0.428 LLM_APPROVED  qa            ← o Q&A aprovado no passo 4
+[2] score=0.428 LLM_APPROVED  qa            ← o Q&A aprovado no passo 5
 [3] score=0.332 README        README > Rate limiting
 [4] score=0.296 PORTAL_API    POST /v2/charges
 ```
@@ -310,13 +361,29 @@ Ingere com README enviado. **Content-Type:** `text/markdown` (ou `text/plain`).
 **Body:** o markdown cru. **200:** `IngestionResult`.
 
 ### `POST /components/{id}/advise`
-Pergunta como consumir. **Body:** `{ "question": "…" (obrigatório), "conversationId": "…" (opcional) }`.
-**200:** `AdviceResult` `{componentId, conversationId, answer, citations[], grounded, approvalId}`.
+Pergunta como consumir. **Body:** `{ "question": "…" (obrigatório), "conversationId": "…" (opcional),
+"model": "…" (opcional) }`. Se `model` for informado, deve ser um id de `GET /api/v1/models`
+(senão **400**); ausente = o roteamento por risco escolhe. **200:** `AdviceResult`
+`{componentId, conversationId, answer, citations[], grounded, approvalId, traceId, route, model,
+lowConfidence, unsupportedEndpoints[]}` — `model` reflete o modelo que de fato respondeu.
 Requer `ANTHROPIC_API_KEY`.
+
+### `GET /models` _(M03 · camada 5 — seleção de modelo)_
+Lista os modelos Anthropic selecionáveis: o **catálogo** (allow-list versionada em `app.models`)
+somado à **descoberta ao vivo** da conta (`/v1/models`, quando há chave e `live-sync=true`).
+**200:** lista de `{id, label, tier, description, source}` (`source` = `catalog` | `anthropic`).
 
 ### `GET /components/{id}/search`
 Recuperação pura, sem LLM. **Query:** `q` (consulta, obrigatório), `k` (top-K, default 5).
 **200:** lista de `Citation` `{index, source, ref, score, snippet}`.
+
+### `POST /components/{id}/feedback` _(M03 · camada 4 — CSAT)_
+Registra o feedback do usuário. **Body:** `{ "value": 1|0, "route": "…" (opcional), "traceId": "…" (opcional) }`.
+**200:** `{componentId, route, recorded:true}`. Alimenta o meter `rag.csat` e um evento no trace.
+
+### `POST /quality/{id}/gate` _(M03 · camada 5 — "O Portão")_
+Roda o golden set do componente pela recuperação e devolve o relatório. **200** se o gate passa,
+**422** (`QualityGate.Report`) se reprova — é o que o CI usa para bloquear o merge. Não requer LLM.
 
 ### `GET /approvals/pending`
 Lista rascunhos `PENDING`. **200:** lista de `ApprovalRecord`.

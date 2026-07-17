@@ -113,6 +113,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
+        <!-- SLIs técnicos (A02): expõe /actuator/prometheus para scrape (p50/p95/p99,
+             tokens, custo, erros por modelo/rota). Versão gerenciada pelo BOM do Boot. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 
         <!-- Testes -->
         <dependency>

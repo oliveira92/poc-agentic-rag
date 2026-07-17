@@ -1,0 +1,14 @@
+id,componentId,question,expectedRef,risk,kind
+g01,payments-sdk,"Qual endpoint cria uma cobrança?","POST /v2/charges",HIGH,facil
+g02,payments-sdk,"Como consulto o status de uma cobrança pelo id?","GET /v2/charges",LOW,facil
+g03,payments-sdk,"Como faço para estornar uma cobrança?","refund",HIGH,facil
+g04,payments-sdk,"Como autenticar as requisições na API?","Autenticação",HIGH,facil
+g05,payments-sdk,"Qual o limite de rate limiting por token?","Rate limiting",LOW,facil
+g06,payments-sdk,"Como garantir idempotência ao criar uma cobrança?","Idempotência",HIGH,medio
+g07,payments-sdk,"Como os erros desta API são formatados?","Erros",MEDIUM,medio
+g08,payments-sdk,"Preciso criar uma cobrança e tratar o reenvio com a mesma chave de idempotência; como faço?","Idempotência",HIGH,medio
+g09,payments-sdk,"Como estornar parcialmente uma cobrança já criada?","refund",HIGH,medio
+g10,payments-sdk,"Quais campos preciso enviar no corpo para criar a cobrança?","POST /v2/charges",MEDIUM,medio
+g11,payments-sdk,"Este componente processa pagamento via boleto com desconto por antecipação?","",LOW,armadilha
+g12,payments-sdk,"Existe endpoint para cancelar uma assinatura recorrente mensal?","",LOW,armadilha
+g13,payments-sdk,"O SDK envia notificações por WhatsApp ao cliente após a cobrança?","",LOW,armadilha

@@ -1,7 +1,10 @@
 package com.example.agenticrag;
 
+import com.example.agenticrag.model.ModelsProperties;
+import com.example.agenticrag.routing.RoutingProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 /**
  * Ponto de entrada da PoC Agentic RAG - Component Advisor.
@@ -14,6 +17,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * {@link com.example.agenticrag.config.DotenvEnvironmentPostProcessor} (antes do contexto subir).
  */
 @SpringBootApplication
+@EnableConfigurationProperties({RoutingProperties.class, ModelsProperties.class})
 public class AgenticRagApplication {
 
     public static void main(String[] args) {

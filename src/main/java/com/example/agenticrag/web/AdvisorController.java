@@ -25,13 +25,17 @@ public class AdvisorController {
         this.advisor = advisor;
     }
 
-    public record AdviseRequest(@NotBlank String question, String conversationId) {
+    /**
+     * @param model modelo Anthropic a usar nesta chamada (opcional). Um dos ids de
+     *              {@code GET /api/v1/models}; ausente = o roteamento por risco decide.
+     */
+    public record AdviseRequest(@NotBlank String question, String conversationId, String model) {
     }
 
     @PostMapping("/advise")
     public AdviceResult advise(@PathVariable String componentId,
                                @org.springframework.web.bind.annotation.RequestBody AdviseRequest request) {
-        return advisor.advise(componentId, request.question(), request.conversationId());
+        return advisor.advise(componentId, request.question(), request.conversationId(), request.model());
     }
 
     /** Recuperação pura (sem LLM): inspeciona o ranking das citações para uma consulta. */

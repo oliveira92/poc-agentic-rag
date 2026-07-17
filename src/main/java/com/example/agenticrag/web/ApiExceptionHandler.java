@@ -2,6 +2,7 @@ package com.example.agenticrag.web;
 
 import com.anthropic.errors.AnthropicException;
 import com.anthropic.errors.RateLimitException;
+import com.example.agenticrag.model.UnknownModelException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -18,6 +19,14 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ProblemDetail onBadRequest(IllegalArgumentException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+    }
+
+    /** Modelo solicitado fora da allow-list — erro de validação (400). */
+    @ExceptionHandler(UnknownModelException.class)
+    public ProblemDetail onUnknownModel(UnknownModelException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        pd.setTitle("Modelo não disponível");
+        return pd;
     }
 
     @ExceptionHandler(IllegalStateException.class)
