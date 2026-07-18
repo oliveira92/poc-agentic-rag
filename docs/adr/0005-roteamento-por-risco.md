@@ -20,9 +20,10 @@ classifica `(componentId, pergunta)` em rota + `RiskTier` e resolve o **modelo r
 ("aliases de negócio → modelo"). O modelo escolhido é aplicado por chamada
 (`ChatOptions.builder().model(...)`) e vira dimensão de métrica/trace.
 
-Por padrão os três aliases (`strong/fast/default`) apontam para o **mesmo** modelo →
-**comportamento inalterado**. Apontar `app.routing.fast-model` para um modelo mais barato ativa
-a economia, mantendo o forte nas rotas de risco.
+O roteamento por custo está **ativo por padrão**: `fast-model=claude-haiku-4-5` (FAQ/baixo risco)
+e `strong-model=claude-sonnet-5` (rotas de risco). Medido na PoC: FAQ→Haiku ~15× mais barato e
+~7× mais rápido que risco→Sonnet. Para desligar a economia, basta igualar os aliases; os overrides
+`APP_ROUTING_*` permitem ajustar por ambiente.
 
 ## Consequências
 

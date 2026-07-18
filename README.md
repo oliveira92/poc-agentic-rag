@@ -129,10 +129,10 @@ demo) está em **[docs/PLANO-OBSERVABILIDADE-QUALIDADE.md](docs/PLANO-OBSERVABIL
 Decisões registradas em ADRs: [docs/adr/](docs/adr/). Checklist de produção + evidências LGPD:
 [docs/CHECKLIST-PRODUCAO.md](docs/CHECKLIST-PRODUCAO.md).
 
-> **Roteamento e comportamento inalterados por default:** os três aliases de modelo
-> (`app.routing.{strong,fast,default}-model`) apontam para o mesmo modelo; aponte `fast-model`
-> para um modelo mais barato e o roteamento por custo entra em ação. O juiz de qualidade roda
-> em **mock** por padrão (sem chave); `app.quality.judge=llm` liga o juiz real.
+> **Roteamento por custo ativo:** `app.routing` manda FAQ/baixo risco para o **Haiku 4.5**
+> (barato/rápido) e as rotas de risco (pagamento/auth/erro) para o **Sonnet 5** (forte, SLO de
+> groundedness ≥ 0,90). Medido na PoC: FAQ→Haiku ~15× mais barato e ~7× mais rápido. O juiz de
+> qualidade roda em **mock** por padrão (sem chave); `app.quality.judge=llm` liga o juiz real.
 >
 > **Seleção de modelo por chamada:** `GET /api/v1/models` lista os modelos aceitos (catálogo
 > versionado em `app.models` + descoberta ao vivo da conta); passe `model` no `POST /advise`

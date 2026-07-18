@@ -98,14 +98,15 @@ app:
     # (re-embed), evitando misturar vetores de modelos diferentes na mesma tabela.
     model-id: ${APP_EMBEDDING_MODEL_ID:paraphrase-multilingual-MiniLM-L12-v2}
 
-  # ---------- M03 · Camada 5 (Governança): roteamento por risco ----------
-  # "Aliases de negócio → modelo real" (A05). Por padrão os três apontam para o mesmo
-  # modelo (comportamento inalterado). Aponte fast-model p/ um modelo mais barato e o
-  # roteamento por custo entra em ação (gráfico "−44%" da aula), mantendo o forte no risco.
+  # ---------- M03 · Camada 5 (Governança): roteamento por risco/custo ----------
+  # "Aliases de negócio → modelo real" (A05). Roteamento por CUSTO ativo: FAQ/baixo risco vai
+  # para o Haiku (barato/rápido) e as rotas de risco (pagamento/auth/erro) ficam no Sonnet forte,
+  # com SLO de groundedness mais rígido. É o gráfico "−44%" da aula — o forte só onde o risco pede.
+  # (Medido na PoC: FAQ→Haiku ~15× mais barato e ~7× mais rápido que risco→Sonnet.)
   routing:
-    strong-model: ${APP_ROUTING_STRONG_MODEL:${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}}
-    fast-model: ${APP_ROUTING_FAST_MODEL:${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}}
-    default-model: ${APP_ROUTING_DEFAULT_MODEL:${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}}
+    strong-model: ${APP_ROUTING_STRONG_MODEL:claude-sonnet-5}                 # HIGH: pagamento/auth/erro
+    default-model: ${APP_ROUTING_DEFAULT_MODEL:claude-sonnet-5}               # MEDIUM: integração geral
+    fast-model: ${APP_ROUTING_FAST_MODEL:claude-haiku-4-5-20251001}           # LOW: FAQ/conceitual
     threshold-high: 0.90       # SLO de groundedness da rota de risco (jurídico/pagamento)
     threshold-default: 0.80
 
@@ -118,10 +119,16 @@ app:
       top-k: 6
 
   # ---------- M03 · Camada 4 (Negócio): custo por token ----------
-  # Preço por 1k tokens para estimar custo/chamada (custo mora nos tokens — A04).
-  # Ajuste para os preços reais do seu provedor/moeda; 0 = não estima.
+  # Custo mora nos tokens (A04). Preço POR FAMÍLIA de modelo (a chave casa por substring do id):
+  # é isso que faz o custo refletir o roteamento por risco (Haiku custa uma fração do Sonnet).
+  # Valores abaixo são preços de tabela ILUSTRATIVOS (USD/1k tokens) — ajuste ao seu contrato.
   cost:
     currency: ${APP_COST_CURRENCY:USD}
+    per-family:
+      haiku:  { input: 0.001, output: 0.005 }
+      sonnet: { input: 0.003, output: 0.015 }
+      opus:   { input: 0.015, output: 0.075 }
+    # fallback global quando nenhuma família casa (0 = não estima)
     input-per-1k: ${APP_COST_INPUT_PER_1K:0.0}
     output-per-1k: ${APP_COST_OUTPUT_PER_1K:0.0}
 

@@ -170,12 +170,13 @@ e **barra o merge** se regredir (endpoint `/quality/{id}/gate` → HTTP 422). A 
 de risco alto precisa passar** + taxa geral ≥ limite. Foca em **recuperação** — a causa raiz da
 maioria das alucinações ("groundedness baixo? olhe o retrieval antes de culpar o modelo").
 
-**Roteamento por risco** — a versão in-process do gateway LiteLLM
+**Roteamento por risco/custo** — a versão in-process do gateway LiteLLM
 ([`RouteClassifier`](../src/main/java/com/example/agenticrag/routing/RouteClassifier.java)):
-"aliases de negócio → modelo real". Rota de risco (pagamento/auth/idempotência/erro) usa o
-modelo **forte**; FAQ conceitual usa o **rápido**. Por padrão os aliases apontam para o mesmo
-modelo (**comportamento inalterado**); apontar `app.routing.fast-model` para um modelo mais
-barato ativa a economia (gráfico "−44%" da aula), mantendo o forte no risco.
+"aliases de negócio → modelo real". **Ativo por padrão:** rota de risco
+(pagamento/auth/idempotência/erro) usa o **Sonnet 5** (forte); FAQ conceitual usa o **Haiku 4.5**
+(rápido/barato). É o gráfico "−44%" da aula — o forte só onde o risco pede. Medido na PoC:
+**FAQ→Haiku ~15× mais barato e ~7× mais rápido** que risco→Sonnet, com o custo por família de
+modelo em `rag_llm_cost{model}` (A04).
 
 **Seleção de modelo por chamada** — governança de modelo
 ([ADR-0006](adr/0006-selecao-de-modelos-anthropic.md)): `GET /api/v1/models` lista os modelos

@@ -1,6 +1,7 @@
 package com.example.agenticrag;
 
 import com.example.agenticrag.model.ModelsProperties;
+import com.example.agenticrag.observability.CostProperties;
 import com.example.agenticrag.routing.RoutingProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -17,7 +18,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * {@link com.example.agenticrag.config.DotenvEnvironmentPostProcessor} (antes do contexto subir).
  */
 @SpringBootApplication
-@EnableConfigurationProperties({RoutingProperties.class, ModelsProperties.class})
+@EnableConfigurationProperties({RoutingProperties.class, ModelsProperties.class, CostProperties.class})
 public class AgenticRagApplication {
 
     public static void main(String[] args) {

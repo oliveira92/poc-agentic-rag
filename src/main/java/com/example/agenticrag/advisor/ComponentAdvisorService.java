@@ -3,6 +3,7 @@ package com.example.agenticrag.advisor;
 import com.example.agenticrag.domain.model.KnowledgeSource;
 import com.example.agenticrag.infra.persistence.KnowledgeApprovalRepository;
 import com.example.agenticrag.model.ModelCatalogService;
+import com.example.agenticrag.observability.CostProperties;
 import com.example.agenticrag.observability.RagMetrics;
 import com.example.agenticrag.quality.CitationGroundingChecker;
 import com.example.agenticrag.routing.Route;
@@ -18,7 +19,6 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -61,15 +61,8 @@ public class ComponentAdvisorService {
     private final RouteClassifier router;
     private final CitationGroundingChecker citationChecker;
     private final ModelCatalogService modelCatalog;
+    private final CostProperties cost;
     private final ObjectProvider<Tracer> tracerProvider;
-
-    /** Preço por 1k tokens de entrada (moeda de app.cost.currency). Custo mora nos tokens (A04). */
-    @Value("${app.cost.input-per-1k:0.0}")
-    private double inputPricePer1k;
-
-    /** Preço por 1k tokens de saída. */
-    @Value("${app.cost.output-per-1k:0.0}")
-    private double outputPricePer1k;
 
     public ComponentAdvisorService(ChatClient chatClient,
                                    VectorStore vectorStore,
@@ -78,6 +71,7 @@ public class ComponentAdvisorService {
                                    RouteClassifier router,
                                    CitationGroundingChecker citationChecker,
                                    ModelCatalogService modelCatalog,
+                                   CostProperties cost,
                                    ObjectProvider<Tracer> tracerProvider) {
         this.chatClient = chatClient;
         this.vectorStore = vectorStore;
@@ -86,6 +80,7 @@ public class ComponentAdvisorService {
         this.router = router;
         this.citationChecker = citationChecker;
         this.modelCatalog = modelCatalog;
+        this.cost = cost;
         this.tracerProvider = tracerProvider;
     }
 
@@ -199,10 +194,9 @@ public class ComponentAdvisorService {
         Integer in = usage.getPromptTokens();
         Integer out = usage.getCompletionTokens();
         metrics.recordTokens(model, in, out);
-        double cost = (in == null ? 0 : in) / 1000.0 * inputPricePer1k
-                + (out == null ? 0 : out) / 1000.0 * outputPricePer1k;
-        if (cost > 0) {
-            metrics.recordCost(model, cost);
+        double estimated = cost.estimate(in, out, model);   // preço por família de modelo (A04)
+        if (estimated > 0) {
+            metrics.recordCost(model, estimated);
         }
         tag(span, "gen_ai.usage.input_tokens", String.valueOf(in));
         tag(span, "gen_ai.usage.output_tokens", String.valueOf(out));
