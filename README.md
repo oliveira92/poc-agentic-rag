@@ -140,6 +140,22 @@ Decisões registradas em ADRs: [docs/adr/](docs/adr/). Checklist de produção +
 
 ---
 
+## Interface gráfica (UI de teste e demonstração)
+
+Em [`frontend/`](frontend/): **React 19 · TypeScript · Vite · TanStack Query**, tema dark.
+Cobre todos os fluxos — chat do Advisor (citações, rota/modelo, guardrail, 👍/👎→trace),
+curadoria HITL, quality gate, catálogo de modelos, métricas M03 ao vivo e ingestão.
+
+```bash
+cd frontend
+npm install
+npm run dev     # http://localhost:5173 (proxy p/ :8080 — backend precisa estar de pé)
+```
+
+Detalhes e mapa das abas → camadas M03: [frontend/README.md](frontend/README.md).
+
+---
+
 ## Como rodar
 
 ### Pré-requisitos

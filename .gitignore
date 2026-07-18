@@ -17,3 +17,7 @@ target/
 ### Spring AI transformers cache (modelos ONNX baixados) ###
 .spring-ai/
 onnx-model-cache/
+
+# frontend (UI React)
+frontend/node_modules/
+frontend/dist/
