@@ -46,6 +46,12 @@ public class KnowledgeApprovalService {
     public ApprovalRecord approve(UUID id, String reviewer, String note) {
         ApprovalRecord record = load(id);
         requirePending(record);
+        // Guarda de qualidade da base: resposta vazia indexada envenena a recuperação
+        // (ranqueia e não entrega nada). Achado real — ver docs/PLANO (camada 3/5).
+        if (record.answer() == null || record.answer().isBlank()) {
+            throw new IllegalStateException(
+                    "Aprovação " + id + " tem resposta vazia e não pode ser indexada — rejeite-a.");
+        }
 
         // Q&A aprovado -> documento indexável na base de conhecimento
         Document doc = Document.builder()

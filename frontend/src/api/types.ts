@@ -14,7 +14,8 @@ export interface AdviceResult {
   answer: string;
   citations: Citation[];
   grounded: boolean;
-  approvalId: string;
+  /** null quando a LLM devolveu resposta vazia (não vira rascunho HITL). */
+  approvalId: string | null;
   traceId: string | null;
   route: string;
   model: string;

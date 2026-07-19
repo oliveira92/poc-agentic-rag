@@ -1,5 +1,6 @@
 package com.example.agenticrag.advisor;
 
+import com.example.agenticrag.ai.ChatResponses;
 import com.example.agenticrag.domain.model.KnowledgeSource;
 import com.example.agenticrag.infra.persistence.KnowledgeApprovalRepository;
 import com.example.agenticrag.model.ModelCatalogService;
@@ -22,9 +23,13 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -43,6 +48,33 @@ import java.util.UUID;
 public class ComponentAdvisorService {
 
     private static final int TOP_K = 6;
+
+    /**
+     * Teto de texto POR FONTE no contexto enviado à LLM. Separado do snippet de exibição
+     * (600 chars): um doc LLM_APPROVED é "Pergunta: ...\n\nResposta aprovada: ..." e, com o
+     * teto curto, a resposta era cortada — o modelo recebia a promessa sem o conteúdo
+     * (falha real observada: "o item [1] veio vazio"). 2000 chars × top-6 ≈ 3k tokens de
+     * input — custo visível em rag.llm.tokens (A04).
+     */
+    private static final int MAX_CONTEXT_CHARS_PER_SOURCE = 2000;
+
+    /**
+     * Máximo de docs LLM_APPROVED no top-K (rerank por fonte — HU-08). Regressão real pega
+     * pelo quality gate: Q&As aprovados grandes tomaram o top-6 e empurraram fontes
+     * primárias para fora (g07 caiu). A precedência "PORTAL_API/README > LLM_APPROVED" que
+     * o prompt declara passa a valer TAMBÉM na seleção da recuperação.
+     */
+    private static final int MAX_APPROVED_IN_TOP_K = 2;
+
+    /**
+     * Bônus léxico quando um termo da pergunta aparece no TÍTULO da fonte (ref) — sinal
+     * barato estilo "BM25 nos títulos", precursor da busca híbrida da Fase 2. Caso real:
+     * "Como os erros desta API são formatados?" — o denso dava só 0.299 para a seção
+     * "README > Erros" (abaixo de overview/auth genéricos); o título casa literalmente.
+     */
+    private static final double TITLE_MATCH_BONUS = 0.12;
+
+    private static final int MIN_TERM_LEN = 4;
 
     private static final String SYSTEM_PROMPT = """
             Você é um engenheiro de plataforma que orienta desenvolvedores a CONSUMIR componentes internos.
@@ -90,7 +122,7 @@ public class ComponentAdvisorService {
      */
     public List<Citation> retrieve(String componentId, String question, int topK) {
         Route route = router.classify(componentId, question);
-        return retrieveTimed(componentId, question, topK, route);
+        return retrieveTimed(componentId, question, topK, route).citations();
     }
 
     /**
@@ -114,13 +146,15 @@ public class ComponentAdvisorService {
         String outcome = "success";
         try {
             // 1) Recuperação semântica filtrada pelo componente (memória de longo prazo)
-            List<Citation> citations = retrieveTimed(componentId, question, TOP_K, route);
+            Retrieval retrieval = retrieveTimed(componentId, question, TOP_K, route);
+            List<Citation> citations = retrieval.citations();
             boolean grounded = !citations.isEmpty();
             if (!grounded) {
                 metrics.incrementUngrounded(route.tag());
                 event(span, "rag.ungrounded");
             }
-            String context = buildContext(citations);
+            // Contexto da LLM usa o texto (quase) completo dos docs — não o snippet de exibição.
+            String context = buildContext(retrieval.docs());
 
             // 2) Geração ancorada no contexto + memória de curto prazo. Modelo escolhido pela rota (A05).
             String userMessage = """
@@ -140,7 +174,8 @@ public class ComponentAdvisorService {
                     .call()
                     .chatResponse();
 
-            String answer = response.getResult().getOutput().getText();
+            // Claude 5 + thinking: o texto final é a ÚLTIMA Generation (a 1ª pode ser raciocínio).
+            String answer = ChatResponses.answerText(response);
             recordUsage(span, model, response);
 
             // 3) Guardrail de fidelidade determinístico (A03): endpoints citados constam das fontes?
@@ -151,8 +186,16 @@ public class ComponentAdvisorService {
                 tag(span, "rag.unsupported_endpoints", String.join(",", check.unsupportedEndpoints()));
             }
 
-            // 4) Persiste rascunho para o loop de aprovação humana (Corrective/Feedback RAG)
-            UUID approvalId = approvals.savePending(componentId, question, answer);
+            // 4) Persiste rascunho para o loop de aprovação humana (Corrective/Feedback RAG).
+            //    Resposta vazia NÃO vira rascunho: já houve caso de vazio aprovado e indexado,
+            //    envenenando a recuperação (o guard espelho existe no approve).
+            UUID approvalId = null;
+            if (answer != null && !answer.isBlank()) {
+                approvalId = approvals.savePending(componentId, question, answer);
+            } else {
+                metrics.incrementError(model, "empty_answer");
+                event(span, "rag.empty_answer");
+            }
 
             return new AdviceResult(componentId, cid, answer, citations, grounded, approvalId,
                     traceId(span), route.tag(), model, check.lowConfidence(), check.unsupportedEndpoints());
@@ -168,20 +211,95 @@ public class ComponentAdvisorService {
 
     // ---------- recuperação instrumentada ----------
 
-    private List<Citation> retrieveTimed(String componentId, String question, int topK, Route route) {
+    /** Docs crus (contexto da LLM) + citações (exibição/envelope), na mesma ordem/índice. */
+    private record Retrieval(List<Document> docs, List<Citation> citations) {
+    }
+
+    private Retrieval retrieveTimed(String componentId, String question, int topK, Route route) {
         String safeComponentId = requireSafe(componentId);
         long t0 = System.nanoTime();
-        List<Document> docs = vectorStore.similaritySearch(SearchRequest.builder()
+        // Over-fetch (2×K) para os reranks (léxico + fonte) terem de onde repor docs.
+        List<Document> fetched = vectorStore.similaritySearch(SearchRequest.builder()
                 .query(question)
-                .topK(topK)
+                .topK(topK * 2)
                 .filterExpression("component_id == '" + safeComponentId + "'")
                 .build());
+        List<Document> docs = selectWithPrecedence(
+                rerankByTitleMatch(fetched, question), topK, MAX_APPROVED_IN_TOP_K);
         List<Citation> citations = toCitations(docs);
         metrics.recordRetrieve(route.tag(), System.nanoTime() - t0);
         if (!citations.isEmpty() && citations.get(0).score() != null) {
             metrics.recordTopScore(route.tag(), citations.get(0).score());
         }
-        return citations;
+        return new Retrieval(docs, citations);
+    }
+
+    /**
+     * Rerank léxico leve: soma {@link #TITLE_MATCH_BONUS} ao score quando algum termo da
+     * pergunta (≥{@value #MIN_TERM_LEN} letras, sem acentos) aparece no título/ref da fonte.
+     * Ordenação estável — sem casamento, a ordem do denso é preservada.
+     */
+    static List<Document> rerankByTitleMatch(List<Document> ranked, String question) {
+        Set<String> queryTerms = significantTerms(question);
+        if (queryTerms.isEmpty()) {
+            return ranked;
+        }
+        record Scored(Document doc, double effective) {
+        }
+        List<Scored> scored = new ArrayList<>(ranked.size());
+        for (Document d : ranked) {
+            double base = d.getScore() == null ? 0.0 : d.getScore();
+            String ref = normalize(refOf(d));
+            boolean titleMatch = queryTerms.stream().anyMatch(ref::contains);
+            scored.add(new Scored(d, base + (titleMatch ? TITLE_MATCH_BONUS : 0.0)));
+        }
+        scored.sort(Comparator.comparingDouble(Scored::effective).reversed());
+        return scored.stream().map(Scored::doc).toList();
+    }
+
+    /** Termos relevantes da pergunta: minúsculos, sem acentos, com {@value #MIN_TERM_LEN}+ letras. */
+    private static Set<String> significantTerms(String question) {
+        Set<String> terms = new HashSet<>();
+        if (question == null) {
+            return terms;
+        }
+        for (String raw : normalize(question).split("[^\\p{L}\\p{Nd}]+")) {
+            if (raw.length() >= MIN_TERM_LEN) {
+                terms.add(raw);
+            }
+        }
+        return terms;
+    }
+
+    /** minúsculas + remoção de diacríticos ("Idempotência" → "idempotencia"). */
+    private static String normalize(String s) {
+        String lower = s == null ? "" : s.toLowerCase(Locale.ROOT);
+        return Normalizer.normalize(lower, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+    }
+
+    /**
+     * Rerank por fonte (HU-08): mantém a ordem por score, mas limita docs LLM_APPROVED a
+     * {@code maxApproved} vagas no top-K — conhecimento aprovado complementa, não expulsa
+     * as fontes primárias (PORTAL_API/README) do contexto.
+     */
+    static List<Document> selectWithPrecedence(List<Document> ranked, int topK, int maxApproved) {
+        List<Document> selected = new ArrayList<>(Math.min(topK, ranked.size()));
+        int approved = 0;
+        for (Document d : ranked) {
+            if (selected.size() >= topK) {
+                break;
+            }
+            boolean isApproved = KnowledgeSource.LLM_APPROVED.name()
+                    .equals(String.valueOf(d.getMetadata().get(KnowledgeSource.METADATA_KEY)));
+            if (isApproved) {
+                if (approved >= maxApproved) {
+                    continue;   // vaga de aprovado esgotada — segue para a próxima primária
+                }
+                approved++;
+            }
+            selected.add(d);
+        }
+        return selected;
     }
 
     // ---------- observabilidade (A01/A02/A04) ----------
@@ -268,21 +386,30 @@ public class ComponentAdvisorService {
         return String.valueOf(md.getOrDefault("kind", "doc"));
     }
 
-    private static String buildContext(List<Citation> citations) {
+    /** Contexto da LLM: mesmos índices [n] das citações, mas com o texto quase completo. */
+    private static String buildContext(List<Document> docs) {
         StringBuilder sb = new StringBuilder();
-        for (Citation c : citations) {
-            sb.append('[').append(c.index()).append("] (").append(c.source()).append(" - ")
-                    .append(c.ref()).append(")\n").append(c.snippet()).append("\n\n");
+        int i = 1;
+        for (Document d : docs) {
+            String source = String.valueOf(d.getMetadata().getOrDefault(KnowledgeSource.METADATA_KEY, "?"));
+            sb.append('[').append(i++).append("] (").append(source).append(" - ")
+                    .append(refOf(d)).append(")\n")
+                    .append(cap(d.getText(), MAX_CONTEXT_CHARS_PER_SOURCE)).append("\n\n");
         }
         return sb.toString();
     }
 
+    /** Snippet curto para exibição (UI/API) — não é o que a LLM recebe. */
     private static String snippet(String text) {
+        return cap(text, 600);
+    }
+
+    private static String cap(String text, int max) {
         if (text == null) {
             return "";
         }
         String t = text.strip();
-        return t.length() <= 600 ? t : t.substring(0, 600) + " …";
+        return t.length() <= max ? t : t.substring(0, max) + " …";
     }
 
     private static String requireSafe(String id) {

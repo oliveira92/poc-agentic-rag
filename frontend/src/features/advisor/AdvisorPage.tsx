@@ -300,9 +300,11 @@ function AssistantMessage({
           👎
         </button>
         <span className="topbar__spacer" />
-        <span className="faint mono" title="rascunho para curadoria humana">
-          rascunho HITL: {r.approvalId.slice(0, 8)}…
-        </span>
+        {r.approvalId && (
+          <span className="faint mono" title="rascunho para curadoria humana">
+            rascunho HITL: {r.approvalId.slice(0, 8)}…
+          </span>
+        )}
       </div>
     </div>
   );

@@ -28,6 +28,11 @@ spring:
           # (que deprecou o parâmetro) volta a funcionar. Use um id EXATO da sua conta
           # (GET /v1/models). Para forçar temperature, adicione: temperature: 0.2
           model: ${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}
+          # Claude 5 tem thinking adaptativo que CONTA no orçamento de saída. Com o default
+          # de 4096 do Spring AI, perguntas complexas queimavam tudo "pensando" e o texto
+          # saía VAZIO (finish=length — a falha silenciosa da A01; diagnosticada ao vivo:
+          # output_tokens=4096 exatos + resposta 0 chars). Teto maior dá folga p/ pensar E responder.
+          max-tokens: ${ANTHROPIC_MAX_TOKENS:16384}
 
     # ---------- Embeddings locais MULTILÍNGUES (ONNX) ----------
     # paraphrase-multilingual-MiniLM-L12-v2: bom em PT-BR e ainda 384 dims

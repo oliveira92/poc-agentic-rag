@@ -64,7 +64,10 @@ public class LlmGroundednessEvaluator implements GroundednessEvaluator {
                 %s
                 """.formatted(nz(question), nz(context), nz(answer));
         try {
-            String raw = judge.prompt().system(RUBRIC).user(user).call().content();
+            // .content() lê a 1ª Generation — com thinking (Claude 5) seria o raciocínio;
+            // o veredito do juiz é a última (ver ChatResponses).
+            String raw = com.example.agenticrag.ai.ChatResponses.answerText(
+                    judge.prompt().system(RUBRIC).user(user).call().chatResponse());
             return parse(raw);
         } catch (Exception e) {
             log.warn("Falha ao avaliar groundedness via LLM: {}", e.getMessage());

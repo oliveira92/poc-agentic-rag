@@ -11,7 +11,8 @@ import java.util.UUID;
  * @param answer               resposta gerada pela LLM, fundamentada nas citações
  * @param citations            fontes recuperadas do pgvector
  * @param grounded             true se houve base recuperada (senão a resposta é fraca/aviso)
- * @param approvalId           id do rascunho salvo para eventual aprovação humana (HITL)
+ * @param approvalId           id do rascunho salvo para eventual aprovação humana (HITL);
+ *                             {@code null} quando a LLM devolveu resposta vazia (não vira rascunho)
  * @param traceId              id do trace (Langfuse/OTel) — correlaciona esta resposta a
  *                             logs, métricas e ao feedback do usuário (A01: "o trace_id amarra tudo")
  * @param route                rota de negócio + risco em que a pergunta caiu (A05)
