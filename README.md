@@ -10,9 +10,9 @@ aprovadas por um humano viram base de conhecimento (loop _human-in-the-loop_).
 > fora o que já existe. Veja [Roadmap](#roadmap-evolutivo).
 
 **Stack:** Java 25 · **Spring Boot 4.0** (Spring Framework 7) · **Spring AI 2.0** ·
-PostgreSQL + pgvector · Embeddings ONNX locais **multilíngues**
-(paraphrase-multilingual-MiniLM-L12-v2, 384d) · **gateway LiteLLM** (Claude, GPT, Gemini,
-modelos abertos) · Langfuse v3 (OTLP).
+PostgreSQL + pgvector · **gateway LiteLLM** para chat **e embeddings** (Claude, GPT, Gemini,
+modelos abertos; 384d) · fallback ONNX local multilíngue para operação offline ·
+Langfuse v3 (OTLP).
 
 ---
 
@@ -100,10 +100,9 @@ Misturar as duas polui a recuperação; por isso são tabelas e mecanismos disti
   em ~3 s, não baixa nada e a chave do vendor continua só no proxy. `dimensions: 384` mantém a
   coluna do pgvector, então trocar de backend não migrou schema. O caminho **ONNX local** segue
   disponível para operação offline (é o que o CI usa), com o custo de recall da quantização
-  medido e registrado ([ADR-0009](docs/adr/0009-embeddings-locais-sem-download-no-boot.md)). Como tem a **mesma dimensão (384)** do MiniLM
-  inglês, a troca **não exigiu migração de schema**. O **id do modelo entra no hash de
-  idempotência** — trocar o modelo força a re-ingestão (re-embed), evitando misturar
-  vetores de modelos diferentes na mesma tabela.
+  medido e registrado ([ADR-0009](docs/adr/0009-embeddings-locais-sem-download-no-boot.md)).
+  O **id do modelo entra no hash de idempotência** — trocar o backend força a re-ingestão
+  (re-embed), evitando misturar vetores de modelos diferentes na mesma tabela.
 - **pgvector + HNSW/cosine.** Estado da arte para ANN em Postgres; um só banco para
   vetores + dados relacionais + memória de conversa reduz operação na PoC.
 - **Flyway com DDL explícito.** `initialize-schema` do Spring AI **desligado**: schema
