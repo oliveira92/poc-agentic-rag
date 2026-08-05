@@ -1,0 +1,83 @@
+# ============================================================================
+# LiteLLM proxy — o "gateway de modelos" da PoC.
+#
+# Por que existe: a app fala UMA API (OpenAI-compatível) e ganha todos os vendors.
+# Trocar de modelo/provedor vira config aqui, sem tocar em código Java.
+#
+# SEGURANÇA (M04): as chaves dos vendors ficam SÓ neste processo, injetadas por env.
+# A aplicação nunca vê credencial de vendor — ela só conhece a LITELLM_MASTER_KEY.
+# Isso reduz o raio de vazamento: comprometer a app não entrega as chaves dos provedores.
+#
+# 'model_name' é o ALIAS público (é o que a app manda em "model" e o que o catálogo
+# em application.yml versiona). 'litellm_params.model' é o modelo real no vendor.
+# ============================================================================
+
+model_list:
+  # ---- Anthropic ----
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ---- OpenAI ----
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ---- Google ----
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ---- Modelo aberto (Groq) ----
+  - model_name: llama-3.3-70b
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  # ---- Embeddings ----
+  # A app usa este alias por padrão (spring.ai.openai.embedding.options.model). Publicar o
+  # embedding no MESMO gateway do chat é o que mantém a promessa do ADR-0007: uma API, uma
+  # credencial na app, e a chave do vendor só aqui dentro.
+  #
+  # Trocar de provedor de embedding é trocar estas 3 linhas — inclusive para um servidor local
+  # (Ollama, TEI, Infinity), que é a saída quando o texto não pode sair da rede. Nesse caso
+  # aponte 'model' para o backend local e a aplicação não muda.
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Alternativa multilíngue mais forte, caso a base cresça em PT-BR e o small perca recall.
+  # Custa mais por token; medir antes de trocar (e reingerir: muda o model-id).
+  - model_name: text-embedding-3-large
+    litellm_params:
+      model: openai/text-embedding-3-large
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  # Não persistir prompt/resposta no proxy: o conteúdo já é observado no Langfuse com
+  # a política da app. Duplicar o armazenamento duplicaria a superfície de vazamento.
+  turn_off_message_logging: true
+  drop_params: true          # parâmetro não suportado pelo vendor é descartado, não quebra a chamada
+  num_retries: 2
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

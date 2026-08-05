@@ -22,6 +22,19 @@ public class ComponentRegistryRepository {
                 .optional();
     }
 
+    /**
+     * Nome + descrição do que foi ingerido, para o juiz de escopo (M04) saber contra o que
+     * medir a pergunta. É o registro da ingestão que define o escopo do agente — não uma lista
+     * de assuntos em config, que envelheceria a cada componente novo.
+     */
+    public Optional<String> findSummary(String componentId) {
+        return jdbc.sql("SELECT concat_ws(': ', name, description) FROM component WHERE id = :id")
+                .param("id", componentId)
+                .query(String.class)
+                .optional()
+                .filter(s -> !s.isBlank());
+    }
+
     public void upsert(String id, String name, String version, String description, String sourceHash) {
         jdbc.sql("""
                 INSERT INTO component (id, name, version, description, source_hash, last_ingested)

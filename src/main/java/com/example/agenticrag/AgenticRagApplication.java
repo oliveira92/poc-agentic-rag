@@ -1,8 +1,11 @@
 package com.example.agenticrag;
 
 import com.example.agenticrag.model.ModelsProperties;
+import com.example.agenticrag.embedding.EmbeddingProperties;
 import com.example.agenticrag.observability.CostProperties;
 import com.example.agenticrag.routing.RoutingProperties;
+import com.example.agenticrag.security.SecurityProperties;
+import com.example.agenticrag.security.dataset.SecurityDatasetProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -18,7 +21,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * {@link com.example.agenticrag.config.DotenvEnvironmentPostProcessor} (antes do contexto subir).
  */
 @SpringBootApplication
-@EnableConfigurationProperties({RoutingProperties.class, ModelsProperties.class, CostProperties.class})
+// EmbeddingProperties é registrada AQUI, e não na LocalOnnxEmbeddingConfig, porque o
+// 'model-id' que ela carrega é consumido pela ingestão nos DOIS backends de embedding — com
+// modelo local e com gateway. Registrá-la junto da config do ONNX a fazia desaparecer quando
+// APP_EMBEDDING_PROVIDER=openai, derrubando o contexto.
+@EnableConfigurationProperties({RoutingProperties.class, ModelsProperties.class, CostProperties.class,
+        SecurityProperties.class, SecurityDatasetProperties.class, EmbeddingProperties.class})
 public class AgenticRagApplication {
 
     public static void main(String[] args) {

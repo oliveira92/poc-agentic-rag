@@ -18,9 +18,43 @@ jobs:
           java-version: '25'
           cache: maven
 
+      # O modelo ONNX de embedding (~129 MB) é baixado UMA vez e restaurado do cache do
+      # Actions nas execuções seguintes. Sem isto, cada job repetia o download inteiro dentro
+      # do boot do contexto Spring — lento e, pior, indistinguível de um teste travado.
+      # A chave inclui o hash do script: mudou a versão do modelo, o cache é invalidado sozinho.
+      - name: Cache do modelo de embedding
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/agentic-rag/onnx
+          key: onnx-embeddings-${{ hashFiles('scripts/prefetch-embeddings.sh') }}
+
+      # Passo explícito e resumível. Se o cache acertou, não baixa nada e só confere o SHA-256.
+      - name: Prefetch do modelo de embedding
+        run: ./scripts/prefetch-embeddings.sh
+
       # verify = compila + unitários (Surefire) + integração/Testcontainers (Failsafe)
+      # EMBEDDING_REQUIRE_LOCAL=true: cache frio aqui é defeito de pipeline. Melhor falhar com
+      # a mensagem certa do que mascarar o problema com 11 minutos de download silencioso.
       - name: Build & test
+        env:
+          # CI roda no FALLBACK local de propósito: o padrão da aplicação é o gateway, que
+          # exigiria uma chave de vendor no pipeline e uma chamada de rede por embedding —
+          # duas coisas que um CI não deve ter. O caminho local é offline e determinístico.
+          APP_EMBEDDING_PROVIDER: transformers
+          # Cache frio aqui é defeito de pipeline. Melhor falhar com a mensagem certa do que
+          # mascarar o problema com 11 minutos de download silencioso.
+          EMBEDDING_REQUIRE_LOCAL: 'true'
         run: mvn -B -ntp verify
+
+      # Evidência do M04: o relatório do dataset da A05 é GERADO pela execução dos testes,
+      # não redigido à mão. Sobe como artefato do build para a revisão poder conferir o número.
+      - name: Publish security dataset report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-dataset-report
+          path: target/security/**
+          if-no-files-found: ignore
 
       - name: Publish test report
         if: always()

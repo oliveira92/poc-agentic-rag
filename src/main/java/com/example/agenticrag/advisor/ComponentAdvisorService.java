@@ -2,6 +2,7 @@ package com.example.agenticrag.advisor;
 
 import com.example.agenticrag.ai.ChatResponses;
 import com.example.agenticrag.domain.model.KnowledgeSource;
+import com.example.agenticrag.infra.persistence.ComponentRegistryRepository;
 import com.example.agenticrag.infra.persistence.KnowledgeApprovalRepository;
 import com.example.agenticrag.model.ModelCatalogService;
 import com.example.agenticrag.observability.CostProperties;
@@ -9,6 +10,13 @@ import com.example.agenticrag.observability.RagMetrics;
 import com.example.agenticrag.quality.CitationGroundingChecker;
 import com.example.agenticrag.routing.Route;
 import com.example.agenticrag.routing.RouteClassifier;
+import com.example.agenticrag.security.GuardDecision;
+import com.example.agenticrag.security.GuardrailViolationException;
+import com.example.agenticrag.security.InputGuard;
+import com.example.agenticrag.security.OutputGuard;
+import com.example.agenticrag.security.SecuritySubject;
+import com.example.agenticrag.security.SecurityVerdict;
+import com.example.agenticrag.security.scope.ScopeContext;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -89,30 +97,39 @@ public class ComponentAdvisorService {
     private final ChatClient chatClient;
     private final VectorStore vectorStore;
     private final KnowledgeApprovalRepository approvals;
+    private final ComponentRegistryRepository registry;
     private final RagMetrics metrics;
     private final RouteClassifier router;
     private final CitationGroundingChecker citationChecker;
     private final ModelCatalogService modelCatalog;
     private final CostProperties cost;
+    private final InputGuard inputGuard;
+    private final OutputGuard outputGuard;
     private final ObjectProvider<Tracer> tracerProvider;
 
     public ComponentAdvisorService(ChatClient chatClient,
                                    VectorStore vectorStore,
                                    KnowledgeApprovalRepository approvals,
+                                   ComponentRegistryRepository registry,
                                    RagMetrics metrics,
                                    RouteClassifier router,
                                    CitationGroundingChecker citationChecker,
                                    ModelCatalogService modelCatalog,
                                    CostProperties cost,
+                                   InputGuard inputGuard,
+                                   OutputGuard outputGuard,
                                    ObjectProvider<Tracer> tracerProvider) {
         this.chatClient = chatClient;
         this.vectorStore = vectorStore;
         this.approvals = approvals;
+        this.registry = registry;
         this.metrics = metrics;
         this.router = router;
         this.citationChecker = citationChecker;
         this.modelCatalog = modelCatalog;
         this.cost = cost;
+        this.inputGuard = inputGuard;
+        this.outputGuard = outputGuard;
         this.tracerProvider = tracerProvider;
     }
 
@@ -131,8 +148,35 @@ public class ComponentAdvisorService {
      *                       risco; se ausente/vazio, o {@link RouteClassifier} decide o modelo.
      */
     public AdviceResult advise(String componentId, String question, String conversationId, String requestedModel) {
+        return advise(componentId, question, conversationId, requestedModel, SecuritySubject.anonymous());
+    }
+
+    /**
+     * @param subject identidade do requisitante para o controle de autorização (SEC-10). O
+     *                {@code /advise} ainda não propaga usuário autenticado e passa
+     *                {@link SecuritySubject#anonymous()} — lacuna registrada na matriz do M04,
+     *                e o motivo de a assinatura já receber o parâmetro em vez de fingir que
+     *                autorização é problema de outra camada.
+     */
+    public AdviceResult advise(String componentId, String question, String conversationId,
+                               String requestedModel, SecuritySubject subject) {
         String cid = StringUtils.hasText(conversationId) ? conversationId : UUID.randomUUID().toString();
-        Route route = router.classify(componentId, question);
+
+        // ---- M04: guarda de ENTRADA. Roda antes de tudo — antes do roteamento, da recuperação
+        // e da montagem do prompt. Uma pergunta bloqueada não gera embedding, não gera token e
+        // não aparece em nenhum log de prompt.
+        GuardDecision guard = inputGuard.inspect(question, scopeContext(componentId), subject);
+        if (guard.blocked()) {
+            // Só evento de trace: bloqueio é o controle FUNCIONANDO, não falha. Contá-lo em
+            // rag.errors misturaria política com pane e faria o alerta de erro disparar
+            // justamente quando a defesa está trabalhando. O volume já sai em
+            // rag.guard.decisions{action=BLOCK}, que é onde ele significa alguma coisa.
+            event(currentSpan(), "rag.guardrail.input_blocked");
+            throw new GuardrailViolationException(guard);
+        }
+        String safeQuestion = guard.text();
+
+        Route route = router.classify(componentId, safeQuestion);
 
         // Seleção de modelo: override manual validado (400 se inválido) OU o modelo da rota (A05).
         String override = modelCatalog.resolve(requestedModel);
@@ -145,8 +189,10 @@ public class ComponentAdvisorService {
         long t0 = System.nanoTime();
         String outcome = "success";
         try {
-            // 1) Recuperação semântica filtrada pelo componente (memória de longo prazo)
-            Retrieval retrieval = retrieveTimed(componentId, question, TOP_K, route);
+            // 1) Recuperação semântica filtrada pelo componente (memória de longo prazo).
+            //    Daqui para a frente só circula 'safeQuestion': o dado mascarado não pode entrar
+            //    nem no embedding, nem no prompt, nem no rascunho do HITL.
+            Retrieval retrieval = retrieveTimed(componentId, safeQuestion, TOP_K, route);
             List<Citation> citations = retrieval.citations();
             boolean grounded = !citations.isEmpty();
             if (!grounded) {
@@ -163,7 +209,7 @@ public class ComponentAdvisorService {
 
                     CONTEXTO (fontes numeradas):
                     %s
-                    """.formatted(componentId, question,
+                    """.formatted(componentId, safeQuestion,
                     grounded ? context : "(nenhum contexto recuperado — a base para este componente pode não ter sido ingerida)");
 
             ChatResponse response = chatClient.prompt()
@@ -175,10 +221,23 @@ public class ComponentAdvisorService {
                     .chatResponse();
 
             // Claude 5 + thinking: o texto final é a ÚLTIMA Generation (a 1ª pode ser raciocínio).
-            String answer = ChatResponses.answerText(response);
+            String rawAnswer = ChatResponses.answerText(response);
             recordUsage(span, model, response);
 
-            // 3) Guardrail de fidelidade determinístico (A03): endpoints citados constam das fontes?
+            // 3) M04: guarda de SAÍDA. Última barreira antes de o texto chegar ao usuário E de
+            //    virar rascunho HITL — sem ela, um dado sensível que escapou da ingestão seria
+            //    aprovado por um humano e reindexado, virando permanente.
+            GuardDecision outputGuardDecision = outputGuard.inspect(rawAnswer, SYSTEM_PROMPT);
+            if (outputGuardDecision.blocked()) {
+                event(span, "rag.guardrail.output_blocked");
+                throw new GuardrailViolationException(outputGuardDecision);
+            }
+            String answer = outputGuardDecision.text();
+            if (outputGuardDecision.masked()) {
+                event(span, "rag.guardrail.output_masked");
+            }
+
+            // 4) Guardrail de fidelidade determinístico (A03): endpoints citados constam das fontes?
             CitationGroundingChecker.Result check = citationChecker.check(answer, citations);
             if (check.lowConfidence()) {
                 metrics.incrementLowConfidence(route.tag());
@@ -186,19 +245,20 @@ public class ComponentAdvisorService {
                 tag(span, "rag.unsupported_endpoints", String.join(",", check.unsupportedEndpoints()));
             }
 
-            // 4) Persiste rascunho para o loop de aprovação humana (Corrective/Feedback RAG).
+            // 5) Persiste rascunho para o loop de aprovação humana (Corrective/Feedback RAG).
             //    Resposta vazia NÃO vira rascunho: já houve caso de vazio aprovado e indexado,
             //    envenenando a recuperação (o guard espelho existe no approve).
             UUID approvalId = null;
             if (answer != null && !answer.isBlank()) {
-                approvalId = approvals.savePending(componentId, question, answer);
+                approvalId = approvals.savePending(componentId, safeQuestion, answer);
             } else {
                 metrics.incrementError(model, "empty_answer");
                 event(span, "rag.empty_answer");
             }
 
             return new AdviceResult(componentId, cid, answer, citations, grounded, approvalId,
-                    traceId(span), route.tag(), model, check.lowConfidence(), check.unsupportedEndpoints());
+                    traceId(span), route.tag(), model, check.lowConfidence(), check.unsupportedEndpoints(),
+                    SecurityVerdict.of(guard, outputGuardDecision));
         } catch (RuntimeException e) {
             outcome = classifyError(e);
             metrics.incrementError(model, outcome);
@@ -207,6 +267,19 @@ public class ComponentAdvisorService {
         } finally {
             metrics.recordAdvise(route.tag(), model, outcome, System.nanoTime() - t0);
         }
+    }
+
+    /**
+     * A "moldura" que o juiz de escopo usa: o que a base sabe sobre este componente.
+     *
+     * <p>Vem do registro da ingestão, não de uma lista fixa em config — assim o escopo do agente
+     * acompanha o que foi de fato ingerido. Sem registro (componente nunca ingerido) o contexto
+     * carrega só o id: o juiz léxico se abstém em vez de reprovar tudo, e quem responde pela
+     * falta de base é o sinal de {@code ungrounded}, que já existe.
+     */
+    private ScopeContext scopeContext(String componentId) {
+        String summary = registry.findSummary(componentId).orElse(null);
+        return ScopeContext.of(componentId, summary);
     }
 
     // ---------- recuperação instrumentada ----------

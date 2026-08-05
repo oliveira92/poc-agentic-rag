@@ -24,7 +24,8 @@ npm run dev          # http://localhost:5173
 | **Advisor** | chat com citações `[n]`, badges de rota/modelo, guardrail anti-alucinação, 👍/👎 (CSAT→trace), traceId copiável | 1 · 3 · 4 · 5 |
 | **Curadoria** | fila HITL: aprovar → indexa `LLM_APPROVED` / rejeitar → descarta | governança do conhecimento |
 | **Quality Gate** | roda "O Portão" (golden set pela recuperação) e mostra PASS/FAIL por caso | 5 |
-| **Modelos** | catálogo versionado + modelos reais da conta (`/v1/models`) | 5 (ADR-0006) |
+| **Segurança** | controles do M04 com ação por estágio + os dois datasets (componentes e A05) em linha de base × protegida, com denominador | M04 (ADR-0008) |
+| **Modelos** | catálogo versionado + modelos publicados no gateway LiteLLM, com o provedor de cada alias | 5 (ADR-0006 · ADR-0007) |
 | **Métricas** | SLIs `rag_*` ao vivo: custo/tokens/latência por modelo e rota, CSAT, HITL | 2 · 4 |
 | **Ingestão** | ingerir do portal ou com README próprio (idempotente) | — |
 

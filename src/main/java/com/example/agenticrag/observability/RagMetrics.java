@@ -122,4 +122,27 @@ public class RagMetrics {
     public void recordHitl(String outcome) {
         registry.counter("rag.hitl", "outcome", outcome).increment();
     }
+
+    /**
+     * Disparo de guardrail (M04): por estágio, ação e controle.
+     *
+     * <p>As três dimensões juntas são o que torna a métrica acionável. Só o total de bloqueios
+     * não distingue "o controle está funcionando" de "o controle está barrando usuário legítimo":
+     * um pico em {@code SEC-02/MASK} na entrada é operação normal, o mesmo pico em
+     * {@code SEC-02/BLOCK} na ingestão é alguém tentando envenenar a base.
+     */
+    public void recordGuard(String stage, String action, String controlId) {
+        registry.counter("rag.guard.decisions",
+                "stage", stage, "action", action, "control", controlId).increment();
+    }
+
+    /** Custo de latência da camada de segurança — o preço do controle, medido (A02). */
+    public void recordGuardLatency(String stage, long nanos) {
+        Timer.builder("rag.guard.latency")
+                .description("Latência da avaliação de guardrails")
+                .tag("stage", stage)
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(registry)
+                .record(nanos, TimeUnit.NANOSECONDS);
+    }
 }

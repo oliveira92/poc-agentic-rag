@@ -1,5 +1,7 @@
 package com.example.agenticrag.advisor;
 
+import com.example.agenticrag.security.SecurityVerdict;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -19,6 +21,7 @@ import java.util.UUID;
  * @param model                modelo que realmente respondeu (roteamento por risco)
  * @param lowConfidence        guardrail de fidelidade: o texto citou endpoint fora das fontes (A03)
  * @param unsupportedEndpoints endpoints citados no texto que NÃO constam das citações (evidência)
+ * @param security             o que os guardrails de entrada/saída fizeram nesta chamada (M04)
  */
 public record AdviceResult(
         String componentId,
@@ -31,5 +34,6 @@ public record AdviceResult(
         String route,
         String model,
         boolean lowConfidence,
-        List<String> unsupportedEndpoints) {
+        List<String> unsupportedEndpoints,
+        SecurityVerdict security) {
 }

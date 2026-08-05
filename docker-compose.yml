@@ -1,5 +1,6 @@
 # Infra local para a PoC.
 #   Só o banco da app:   docker compose up -d postgres
+#   Gateway de modelos:  docker compose --profile llm up -d litellm
 #   App + Langfuse v3:   docker compose --profile observability up -d
 #
 # Langfuse v3 exige, além do Postgres: ClickHouse (traces), Redis (fila) e S3/MinIO
@@ -24,6 +25,33 @@ services:
       timeout: 5s
       retries: 10
 
+  # ===== Gateway de modelos LiteLLM (perfil llm) =====
+  # Uma API OpenAI-compatível na frente de todos os vendors. A app aponta
+  # spring.ai.openai.base-url para cá e passa a escolher QUALQUER modelo publicado.
+  # As chaves de vendor vêm do .env e ficam SÓ neste container (nunca na app, nunca no git).
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: rag-litellm
+    profiles: ["llm"]
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/health/liveliness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   # ===== Langfuse v3 (perfil observability) =====
   langfuse-web:
     image: langfuse/langfuse:3
@@ -41,7 +69,9 @@ services:
     ports:
       - "3000:3000"
     environment: &langfuse-env
-      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
+      # Credencial do Postgres interno do Langfuse: vive só na rede do compose e já está
+      # declarada como valor de desenvolvimento no cabeçalho deste arquivo.
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse  # NOSECRET: dev-only
       SALT: "dev-salt-troque-em-prod"
       ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       TELEMETRY_ENABLED: "false"
@@ -100,7 +130,7 @@ services:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --user=clickhouse --password=clickhouse --query='SELECT 1'"]
+      test: ["CMD-SHELL", "clickhouse-client --user=clickhouse --password=clickhouse --query='SELECT 1'"]  # NOSECRET: dev-only
       interval: 5s
       timeout: 5s
       retries: 15

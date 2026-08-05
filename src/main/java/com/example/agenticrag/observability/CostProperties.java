@@ -34,14 +34,27 @@ public record CostProperties(
     public record Price(double input, double output) {
     }
 
-    /** Preço da família que casa com o id do modelo, ou o global como fallback. */
+    /**
+     * Preço da família que casa com o id do modelo, ou o global como fallback.
+     *
+     * <p>Casa pela chave MAIS LONGA, não pela primeira: com famílias que se contêm
+     * ({@code gpt-4o} ⊂ {@code gpt-4o-mini}) depender da ordem do mapa cobraria o preço do
+     * modelo caro pelo barato. A regra "mais específica ganha" é estável e não depende de
+     * como o binder ordenou o YAML.
+     */
     public Price priceFor(String model) {
         if (model != null && perFamily != null) {
             String m = model.toLowerCase(Locale.ROOT);
+            Map.Entry<String, Price> best = null;
             for (Map.Entry<String, Price> e : perFamily.entrySet()) {
-                if (m.contains(e.getKey().toLowerCase(Locale.ROOT))) {
-                    return e.getValue();
+                String family = e.getKey().toLowerCase(Locale.ROOT);
+                if (m.contains(family)
+                        && (best == null || family.length() > best.getKey().length())) {
+                    best = e;
                 }
+            }
+            if (best != null) {
+                return best.getValue();
             }
         }
         return new Price(inputPer1k, outputPer1k);

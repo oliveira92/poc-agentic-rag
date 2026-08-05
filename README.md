@@ -11,7 +11,8 @@ aprovadas por um humano viram base de conhecimento (loop _human-in-the-loop_).
 
 **Stack:** Java 25 · **Spring Boot 4.0** (Spring Framework 7) · **Spring AI 2.0** ·
 PostgreSQL + pgvector · Embeddings ONNX locais **multilíngues**
-(paraphrase-multilingual-MiniLM-L12-v2, 384d) · Anthropic Claude · Langfuse v3 (OTLP).
+(paraphrase-multilingual-MiniLM-L12-v2, 384d) · **gateway LiteLLM** (Claude, GPT, Gemini,
+modelos abertos) · Langfuse v3 (OTLP).
 
 ---
 
@@ -24,7 +25,7 @@ Rodado localmente contra Postgres+pgvector real e a app no perfil `mock`:
 | Build (Spring Boot 4.0.7 + Spring AI 2.0.0, Java 25) | ✅ `BUILD SUCCESS` + 6 testes verdes |
 | Flyway V1+V2+V3 no pgvector (PG 17) | ✅ extensões, `vector(384)`, HNSW, `sequence_id` (Spring AI 2.0) |
 | `/advise` real com **claude-sonnet-5** (Boot 4) | ✅ funciona — Spring AI 2.0 não força mais `temperature` |
-| Boot da app + health | ✅ `UP`, embeddings ONNX carregados |
+| Boot da app + health | ✅ `UP` em **3,3 s** — embeddings pelo gateway, nenhum modelo no processo |
 | Ingestão do portal (`payments-sdk`) | ✅ 3 endpoints + 1 overview + 5 chunks README = 9 docs, 384 dims |
 | Idempotência (re-ingest) | ✅ `skipped:true`, 0 docs |
 | Recuperação PT (multilíngue) | ✅ "estornar" → endpoint de refund em 1º |
@@ -44,17 +45,23 @@ flowchart LR
     subgraph Ingestao["Fluxo de Ingestão"]
         P[Portal de Componentes<br/>API + README] -->|ACL: ComponentPortalPort| ING[ComponentIngestionService]
         MD[README markdown enviado] --> ING
-        ING -->|chunk + metadata| EMB1[EmbeddingModel ONNX<br/>multilingual-MiniLM-L12 / 384d]
+        ING --> IGD[IngestionGuard · M04<br/>binário · segredo · PII · escopo]
+        IGD -->|recusado: 422| BLK2[Não vira embedding]
+        IGD -->|chunk + metadata| EMB1[EmbeddingModel ONNX<br/>multilingual-MiniLM-L12 / 384d]
         EMB1 --> VDB[(pgvector<br/>vector_store)]
         ING --> REG[(component<br/>registry)]
     end
 
     subgraph Consulta["Fluxo de Consulta (Structured RAG)"]
-        U[Usuário: como consumo X?] --> ADV[ComponentAdvisorService]
+        U[Usuário: como consumo X?] --> IG[InputGuard · M04]
+        IG -->|bloqueado: 422| BLK[Nem chega ao modelo]
+        IG -->|sanitizado| ADV[ComponentAdvisorService]
         ADV -->|similaritySearch filtrado por component_id| VDB
         ADV -->|memória curta: conversation_id| MEM[(SPRING_AI_CHAT_MEMORY)]
-        ADV -->|contexto + citações| LLM[Anthropic Claude via Spring AI]
-        LLM --> ANS[Resposta fundamentada + citações]
+        ADV -->|contexto + citações| GW[Gateway LiteLLM]
+        GW --> LLM[Claude · GPT · Gemini · modelo aberto]
+        LLM --> OG[OutputGuard · M04]
+        OG --> ANS[Resposta fundamentada + citações]
     end
 
     subgraph HITL["Loop de Aprovação (Corrective/Feedback RAG)"]
@@ -89,9 +96,11 @@ Misturar as duas polui a recuperação; por isso são tabelas e mecanismos disti
 - **Structured RAG, não "naive".** A fonte primária é uma API com contrato: cada
   endpoint vira um documento com **metadados filtráveis** (`kind`, `endpoint`,
   `version`), o que melhora precisão e permite filtro por componente.
-- **Embeddings locais multilíngues (ONNX, 384d).** A Anthropic **não tem API de
-  embeddings**. Uso o `paraphrase-multilingual-MiniLM-L12-v2` (bom em PT-BR) localmente:
-  zero chave externa, reprodutível e barato. Como tem a **mesma dimensão (384)** do MiniLM
+- **Embeddings pelo mesmo gateway do chat (384d).** Nenhum modelo dentro do processo: a app sobe
+  em ~3 s, não baixa nada e a chave do vendor continua só no proxy. `dimensions: 384` mantém a
+  coluna do pgvector, então trocar de backend não migrou schema. O caminho **ONNX local** segue
+  disponível para operação offline (é o que o CI usa), com o custo de recall da quantização
+  medido e registrado ([ADR-0009](docs/adr/0009-embeddings-locais-sem-download-no-boot.md)). Como tem a **mesma dimensão (384)** do MiniLM
   inglês, a troca **não exigiu migração de schema**. O **id do modelo entra no hash de
   idempotência** — trocar o modelo força a re-ingestão (re-embed), evitando misturar
   vetores de modelos diferentes na mesma tabela.
@@ -140,6 +149,47 @@ Decisões registradas em ADRs: [docs/adr/](docs/adr/). Checklist de produção +
 
 ---
 
+## Segurança do agente (M04 — guardrails fora do system prompt)
+
+Camada de controles em **Java**, fora do prompt, em três estágios — **ingestão · entrada ·
+saída** —, cobrindo os três riscos do threat model: conteúdo fora de escopo virando embedding,
+perguntas fora do conteúdo ingerido e dado sensível entrando na base ou saindo na resposta.
+
+**Leia primeiro:** [SECURITY.md](SECURITY.md) (curto). Detalhamento, matriz de evidências e
+risco residual: [docs/SEGURANCA-M04.md](docs/SEGURANCA-M04.md) ·
+[ADR-0008](docs/adr/0008-guardrails-fora-do-system-prompt.md).
+
+| Estágio | Controles | Ação típica |
+|---|---|---|
+| **Ingestão** | binário/PDF por magic bytes, segredo, PII, injeção indireta, fora de escopo, tamanho | **BLOCK** — aqui o erro é permanente: o que vira embedding fica |
+| **Entrada** | injeção de prompt, dado de terceiro, URL, binário, escopo, tamanho, autorização de recurso | **BLOCK**; PII e segredo → **MASK** |
+| **Saída** | PII, segredo, reprodução do prompt de sistema | **MASK**; vazamento do prompt → **BLOCK** |
+
+A política mora em `application.yml` (`app.security`), não no código: endurecer MASK → BLOCK não
+exige recompilar. Inventário ao vivo em `GET /api/v1/security/controls`.
+
+**Dois datasets**, rodados contra o **mesmo pipeline** do `/advise` e com a política de produção:
+`componentes` é o domínio desta PoC (perguntas de dev sobre o `payments-sdk`) e `a05-seguros` é o
+da atividade A05. Mesmos controles, mesmos arquétipos de ataque, **zero código específico de
+domínio** — é essa comparação que sustenta a afirmação.
+
+| Cenário | Ataques barrados | Legítimos barrados (FP) | Atendidos com ofuscação |
+|---|---|---|---|
+| `componentes` (n=17) | 0/10 → **10/10** | 0/7 → **0/7** | 1/7 |
+| `a05-seguros` (n=14) | 0/8 → **8/8** | 0/6 → **0/6** | 1/6 |
+
+```bash
+mvn -Dtest=SecurityDatasetTest test        # gera target/security/dataset-*-report.md
+curl -s -X POST localhost:8080/api/v1/security/evaluate | jq '.[] | {scenarioId, protectedRun}'
+```
+
+> **`MASK` é decisão de projeto, não meio-termo.** O dev que cola o payload real — com PII de
+> cliente dentro — para perguntar por que deu 400 não está atacando; é o uso mais comum. Bloquear
+> transformaria o caso principal em recusa. Mascarar atende "não enviar dado sensível ao modelo"
+> **e** responde a pessoa — e o dataset mede isso separando "barrado" de "atendido com ofuscação".
+
+---
+
 ## Interface gráfica (UI de teste e demonstração)
 
 Em [`frontend/`](frontend/): **React 19 · TypeScript · Vite · TanStack Query**, tema dark.
@@ -163,26 +213,41 @@ Detalhes e mapa das abas → camadas M03: [frontend/README.md](frontend/README.m
 - Docker + Docker Compose
 - Maven 3.9+ (ou use o IntelliJ, que gerencia o Maven pelo `pom.xml`)
 
-### 1) Suba o Postgres + pgvector
+### 1) Suba o gateway de modelos (LiteLLM)
+```bash
+docker compose --profile llm up -d litellm    # http://localhost:4000
+```
+O gateway atende **chat e embeddings**. A app fala uma API (OpenAI-compatível) e alcança todos os
+provedores publicados em [`litellm/config.yaml`](litellm/config.yaml); as chaves dos vendors ficam
+**só no container do proxy** ([ADR-0007](docs/adr/0007-gateway-de-modelos-litellm.md)).
+
+> **Sem chave, offline, ou atrás de firewall?** `APP_EMBEDDING_PROVIDER=transformers` volta ao
+> modelo ONNX local — rode `./scripts/prefetch-embeddings.sh` uma vez (~129 MB, download
+> resumível e verificado por SHA-256). É o caminho que o CI usa. Custa recall medido
+> (2/3 vs 3/3 dos pares do domínio, por causa da quantização) — ver
+> [ADR-0009](docs/adr/0009-embeddings-locais-sem-download-no-boot.md).
+
+### 2) Suba o Postgres + pgvector
 ```bash
 docker compose up -d postgres
 ```
 
-### 2) Configure o ambiente
+### 3) Configure o ambiente
 ```bash
-cp .env.example .env   # edite ANTHROPIC_API_KEY (necessária só para /advise)
+cp .env.example .env   # LITELLM_* + a chave do(s) provedor(es) que você tem
 ```
 O **`.env` é carregado automaticamente** no boot (por um `EnvironmentPostProcessor` próprio) —
 **não precisa dar `source`**. Variáveis reais do ambiente ou `-D` têm precedência sobre o `.env`.
 Para a Fase 1 sem portal real, use o perfil `mock`.
 
 > **Dicas:**
-> - Use um **id de modelo exato** da sua conta (`GET https://api.anthropic.com/v1/models`).
+> - O `model` que você passa é o **alias do proxy** (`model_name` em `litellm/config.yaml`),
+>   não o id do vendor. `GET /api/v1/models` lista o que está publicado.
 > - **`temperature` + Claude 5:** o Spring AI **2.0** não envia mais um `temperature` default,
 >   então a família **Claude 5** funciona — o default aqui é **`claude-sonnet-5`**.
 > - O caminho do arquivo pode ser trocado com `-Ddotenv.path=/outro/.env`.
 
-### 3) Rode a aplicação
+### 4) Rode a aplicação
 ```bash
 # perfil mock: fornece o componente de exemplo "payments-sdk"
 mvn -Dspring-boot.run.profiles=mock spring-boot:run
@@ -191,7 +256,7 @@ mvn -Dspring-boot.run.profiles=mock spring-boot:run
 > do HuggingFace e cacheado — o primeiro boot leva **~190 s**. As próximas subidas usam o
 > cache e sobem em **~10 s**.
 
-### 4) Smoke test (30s)
+### 5) Smoke test (30s)
 ```bash
 curl -s localhost:8080/actuator/health                              # {"status":"UP"}
 curl -s -X POST localhost:8080/api/v1/components/payments-sdk/ingest # ingere o mock
@@ -366,28 +431,44 @@ preserva o conhecimento aprovado).
 ## Referência da API
 
 Base: `/api/v1`. Erros seguem **RFC 7807** (`application/problem+json`): 404 (não encontrado),
-409 (aprovação já revisada), 400 (validação).
+409 (aprovação já revisada), 400 (validação), **422** (bloqueado por guardrail — o corpo traz
+`stage` e `controls`).
 
 ### `POST /components/{id}/ingest`
 Ingere metadados + README do portal. **Body:** nenhum. **200:** `IngestionResult`
-`{componentId, endpointsIndexed, readmeChunks, totalDocuments, skipped}`. **404:** id inexistente no portal.
+`{componentId, endpointsIndexed, readmeChunks, totalDocuments, skipped}`. **404:** id inexistente
+no portal. **422:** o conteúdo violou um controle de ingestão (M04).
 
 ### `POST /components/{id}/ingest/readme`
-Ingere com README enviado. **Content-Type:** `text/markdown` (ou `text/plain`).
-**Body:** o markdown cru. **200:** `IngestionResult`.
+Ingere com README enviado. **Content-Type:** `text/markdown` (ou `text/plain`) — outro tipo é
+**415**, e o conteúdo ainda passa pela checagem de magic bytes (extensão mente, assinatura não).
+**Body:** o markdown cru. **200:** `IngestionResult`. **422:** guardrail de ingestão.
 
 ### `POST /components/{id}/advise`
 Pergunta como consumir. **Body:** `{ "question": "…" (obrigatório), "conversationId": "…" (opcional),
 "model": "…" (opcional) }`. Se `model` for informado, deve ser um id de `GET /api/v1/models`
 (senão **400**); ausente = o roteamento por risco escolhe. **200:** `AdviceResult`
 `{componentId, conversationId, answer, citations[], grounded, approvalId, traceId, route, model,
-lowConfidence, unsupportedEndpoints[]}` — `model` reflete o modelo que de fato respondeu.
-Requer `ANTHROPIC_API_KEY`.
+lowConfidence, unsupportedEndpoints[], security}` — `model` reflete o modelo que de fato
+respondeu e `security` diz o que os guardrails fizeram (`{inputAction, outputAction, controls[],
+categories[]}`). **422:** pergunta bloqueada por um controle de entrada (M04) — não houve
+chamada de modelo. Requer o gateway configurado.
 
 ### `GET /models` _(M03 · camada 5 — seleção de modelo)_
-Lista os modelos Anthropic selecionáveis: o **catálogo** (allow-list versionada em `app.models`)
-somado à **descoberta ao vivo** da conta (`/v1/models`, quando há chave e `live-sync=true`).
-**200:** lista de `{id, label, tier, description, source}` (`source` = `catalog` | `anthropic`).
+Lista os modelos selecionáveis: o **catálogo** (allow-list versionada em `app.models`) somado à
+**descoberta ao vivo** no gateway (`/model/info`, com fallback `/v1/models`). Com o LiteLLM a
+lista é **multi-provedor**. **200:** lista de `{id, label, tier, description, source, provider}`
+(`source` = `catalog` | `litellm` | `anthropic`).
+
+### `GET /security/controls` _(M04 — inventário de controles)_
+Estado da camada + os controles ativos com a ação de cada estágio. Montado dos **beans reais**,
+então não descola do código. **200:** `{status, controls[]}`.
+
+### `POST /security/evaluate` _(M04 — datasets)_
+Roda **todos** os cenários pelo mesmo pipeline do `/advise` e devolve linha de base × protegida
+com denominador. **200** quando todos ficam limpos, **422** quando algum tem falso positivo ou
+ataque não detectado — os dois trazem os relatórios. `POST /security/evaluate/{cenário}` roda um
+só (`componentes` | `a05-seguros`); `GET /security/scenarios` lista os disponíveis.
 
 ### `GET /components/{id}/search`
 Recuperação pura, sem LLM. **Query:** `q` (consulta, obrigatório), `k` (top-K, default 5).
@@ -443,3 +524,7 @@ docker compose up -d postgres
 mvn -Dit.datasource.url=jdbc:postgresql://localhost:5432/ragdb \
     -Dit.datasource.username=rag -Dit.datasource.password=rag verify
 ```
+
+`LocalOnnxEmbeddingTest` **se pula sozinho** quando o cache do modelo está frio — um teste que
+baixa 112 MB não é um teste, é um download com asserção. Rode `./scripts/prefetch-embeddings.sh`
+para habilitá-lo.

@@ -7,18 +7,20 @@ import { IngestPage } from './features/ingest/IngestPage';
 import { MetricsPage } from './features/metrics/MetricsPage';
 import { ModelsPage } from './features/models/ModelsPage';
 import { QualityPage } from './features/quality/QualityPage';
+import { SecurityPage } from './features/security/SecurityPage';
 
 /** Componente-alvo global (ex.: payments-sdk) — usado por Advisor, Gate e Ingestão. */
 const ComponentCtx = createContext<string>('payments-sdk');
 export const useComponentId = () => useContext(ComponentCtx);
 
-type Page = 'advisor' | 'approvals' | 'quality' | 'models' | 'metrics' | 'ingest';
+type Page = 'advisor' | 'approvals' | 'quality' | 'security' | 'models' | 'metrics' | 'ingest';
 
 const NAV: { id: Page; label: string; icon: string; title: string }[] = [
   { id: 'advisor', label: 'Advisor', icon: '💬', title: 'Advisor — pergunte como consumir' },
   { id: 'approvals', label: 'Curadoria', icon: '✅', title: 'Curadoria humana (HITL)' },
   { id: 'quality', label: 'Quality Gate', icon: '🛡️', title: 'Quality Gate — O Portão' },
-  { id: 'models', label: 'Modelos', icon: '🧠', title: 'Modelos Anthropic disponíveis' },
+  { id: 'security', label: 'Segurança', icon: '🔒', title: 'Segurança M04 — controles fora do system prompt' },
+  { id: 'models', label: 'Modelos', icon: '🧠', title: 'Modelos disponíveis no gateway LiteLLM' },
   { id: 'metrics', label: 'Métricas', icon: '📈', title: 'Métricas M03 (SLIs · custo · CSAT)' },
   { id: 'ingest', label: 'Ingestão', icon: '📥', title: 'Ingestão de componentes' },
 ];
@@ -43,7 +45,7 @@ export function App() {
             <div className="logo__mark">Ai</div>
             <div>
               <div className="logo__name">Component Advisor</div>
-              <div className="logo__sub">Agentic RAG · M03</div>
+              <div className="logo__sub">Agentic RAG · M03 + M04</div>
             </div>
           </div>
 
@@ -88,6 +90,9 @@ export function App() {
           )}
           {page === 'quality' && (
             <div className="content"><QualityPage /></div>
+          )}
+          {page === 'security' && (
+            <div className="content"><SecurityPage /></div>
           )}
           {page === 'models' && (
             <div className="content"><ModelsPage /></div>

@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { advise, listModels, sendFeedback } from '../../api/client';
+import { advise, ApiError, listModels, sendFeedback } from '../../api/client';
 import type { AdviceResult } from '../../api/types';
 import { useComponentId } from '../../App';
 import {
@@ -21,6 +21,10 @@ interface ChatEntry {
   result?: AdviceResult;
   latencyMs?: number;
   error?: string;
+  /** true quando o 422 veio de um guardrail (M04), não de uma falha do sistema. */
+  blocked?: boolean;
+  /** ids dos controles que barraram (SEC-xx). */
+  controls?: string[];
   feedback?: 0 | 1;
 }
 
@@ -62,9 +66,15 @@ export function AdvisorPage() {
       );
     },
     onError: (err, q) => {
+      // 422 é veredito de guardrail, não pane: mostrar como bloqueio (com os controles que
+      // dispararam) em vez de "erro" evita que quem testa conclua que a aplicação quebrou.
+      const blocked = err instanceof ApiError && err.status === 422;
+      const controls = blocked ? (err.controls ?? []) : [];
       setEntries((es) =>
         es.map((e) =>
-          e.question === q && !e.result && !e.error ? { ...e, error: String(err.message) } : e,
+          e.question === q && !e.result && !e.error
+            ? { ...e, error: String(err.message), blocked, controls }
+            : e,
         ),
       );
     },
@@ -128,9 +138,20 @@ export function AdvisorPage() {
                   />
                 ) : e.error ? (
                   <div className="msg-ai">
-                    <div className="alert alert--danger" style={{ margin: 0 }}>
-                      <span>⚠</span>
-                      <span>{e.error}</span>
+                    <div
+                      className={`alert ${e.blocked ? 'alert--warn' : 'alert--danger'}`}
+                      style={{ margin: 0 }}
+                    >
+                      <span>{e.blocked ? '🔒' : '⚠'}</span>
+                      <span>
+                        {e.error}
+                        {e.blocked && e.controls && e.controls.length > 0 && (
+                          <>
+                            {' '}Controles: <code>{e.controls.join(', ')}</code>. A pergunta não
+                            chegou ao modelo.
+                          </>
+                        )}
+                      </span>
                     </div>
                   </div>
                 ) : (
@@ -249,6 +270,22 @@ function AssistantMessage({
           <span>
             <strong>Guardrail anti-alucinação:</strong> a resposta cita endpoints fora das
             fontes: <code>{r.unsupportedEndpoints.join(', ')}</code>
+          </span>
+        </div>
+      )}
+
+      {/* Controle que age em silêncio vira chamado de suporte: dizer o que foi ofuscado
+          explica a resposta sem repetir o dado que acabou de ser protegido. */}
+      {r.security && (r.security.inputAction === 'MASK' || r.security.outputAction === 'MASK') && (
+        <div className="alert alert--warn">
+          <span>🔒</span>
+          <span>
+            <strong>Dado sensível ofuscado</strong>
+            {r.security.inputAction === 'MASK' && ' na pergunta'}
+            {r.security.inputAction === 'MASK' && r.security.outputAction === 'MASK' && ' e'}
+            {r.security.outputAction === 'MASK' && ' na resposta'} pelos controles{' '}
+            <code>{r.security.controls.join(', ')}</code> — o conteúdo original não chegou ao
+            modelo nem ao histórico.
           </span>
         </div>
       )}

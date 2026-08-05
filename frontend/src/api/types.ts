@@ -8,6 +8,17 @@ export interface Citation {
   snippet: string;
 }
 
+/** O que os guardrails do M04 fizeram na chamada. */
+export type GuardAction = 'ALLOW' | 'MASK' | 'BLOCK';
+
+export interface SecurityVerdict {
+  inputAction: GuardAction;
+  outputAction: GuardAction;
+  /** ids dos controles que dispararam (SEC-xx). */
+  controls: string[];
+  categories: string[];
+}
+
 export interface AdviceResult {
   componentId: string;
   conversationId: string;
@@ -21,6 +32,7 @@ export interface AdviceResult {
   model: string;
   lowConfidence: boolean;
   unsupportedEndpoints: string[];
+  security: SecurityVerdict;
 }
 
 export interface AdviseRequest {
@@ -56,7 +68,10 @@ export interface ModelInfo {
   label: string;
   tier: 'forte' | 'rapido' | 'default' | null;
   description: string | null;
-  source: 'catalog' | 'anthropic';
+  /** catalog = allow-list versionada; litellm/anthropic = descoberto ao vivo no backend. */
+  source: 'catalog' | 'litellm' | 'anthropic';
+  /** vendor por trás do alias, quando o gateway informa (anthropic, openai, gemini…). */
+  provider: string | null;
 }
 
 export type RiskTier = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -92,9 +107,80 @@ export interface FeedbackResponse {
   recorded: boolean;
 }
 
+// ---------- M04 · Segurança ----------
+
+export interface SecurityControl {
+  id: string;
+  category: string;
+  description: string;
+  /** classe Java que implementa — o ponteiro para quem for revisar. */
+  implementation: string;
+  /** ação por estágio; só aparece o estágio em que a categoria é tratada. */
+  actions: Partial<Record<'INGESTION' | 'INPUT' | 'OUTPUT', GuardAction>>;
+}
+
+export interface SecurityStatus {
+  enabled: boolean;
+  failMode: 'closed' | 'open';
+  scopeJudge: string;
+  maxQuestionChars: number;
+  maxDocumentChars: number;
+  controls: number;
+}
+
+export interface SecurityControlsResponse {
+  status: SecurityStatus;
+  controls: SecurityControl[];
+}
+
+/** Toda taxa vem com o seu denominador — ver SecurityEvaluationReport.Metrics. */
+export interface SecurityMetrics {
+  totalCases: number;
+  badCases: number;
+  legitimateCases: number;
+  badBlocked: number;
+  badAllowed: number;
+  legitimateBlocked: number;
+  legitimateAllowed: number;
+  legitimateMasked: number;
+}
+
+export interface SecurityCaseResult {
+  id: string;
+  type: 'legitimo' | 'abuso' | 'fora_escopo' | string;
+  question: string;
+  shouldBlock: boolean;
+  baselineAction: GuardAction;
+  action: GuardAction;
+  controls: string[];
+  categories: string[];
+  outcome: 'TP' | 'FP' | 'TN' | 'FN';
+  note: string;
+}
+
+export interface SecurityEvaluationReport {
+  /** id do cenário: 'componentes' | 'a05-seguros'. */
+  scenarioId: string;
+  scenario: string;
+  judge: string;
+  baseline: SecurityMetrics;
+  protectedRun: SecurityMetrics;
+  cases: SecurityCaseResult[];
+}
+
+export interface SecurityScenario {
+  name: string;
+  label: string;
+  cases: number;
+  isDefault: boolean;
+}
+
 /** RFC 7807 — como o ApiExceptionHandler responde erros. */
 export interface ProblemDetail {
   status?: number;
   title?: string;
   detail?: string;
+  /** presentes no 422 de guardrail. */
+  stage?: string;
+  controls?: string[];
 }

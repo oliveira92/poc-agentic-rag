@@ -13,9 +13,9 @@ class ModelCatalogServiceTest {
 
     private static ModelCatalogService service(boolean allowAny) {
         ModelsProperties props = new ModelsProperties(
-                allowAny, false, "https://api.anthropic.com", Duration.ofMinutes(30),
-                List.of(new ModelsProperties.Entry("claude-sonnet-5", "Claude Sonnet 5", "forte", "d"),
-                        new ModelsProperties.Entry("claude-haiku-4-5", "Claude Haiku 4.5", "rapido", "d")));
+                "anthropic", allowAny, false, "https://api.anthropic.com", Duration.ofMinutes(30),
+                List.of(new ModelsProperties.Entry("claude-sonnet-5", "Claude Sonnet 5", "forte", "d", "anthropic"),
+                        new ModelsProperties.Entry("claude-haiku-4-5", "Claude Haiku 4.5", "rapido", "d", "anthropic")));
         // chave "not-set" => descoberta ao vivo desligada => sem rede
         AnthropicModelsClient live = new AnthropicModelsClient(props, "not-set");
         return new ModelCatalogService(props, live);

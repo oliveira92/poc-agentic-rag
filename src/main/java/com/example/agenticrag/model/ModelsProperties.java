@@ -15,29 +15,32 @@ import java.util.List;
  *
  * <pre>
  * app.models:
- *   allow-any: false          # true = aceita qualquer id (contas com ids fora do catálogo)
- *   live-sync: true           # também lista os modelos reais da conta via GET /v1/models
- *   base-url: https://api.anthropic.com
+ *   provider: litellm         # litellm (gateway multi-provedor) | anthropic (direto, sem gateway)
+ *   allow-any: false          # true = aceita qualquer id publicado no gateway
+ *   live-sync: true           # também lista os modelos reais do backend
+ *   base-url: http://localhost:4000
  *   cache-ttl: PT30M          # TTL do cache da lista ao vivo
  *   catalog:
  *     - { id: claude-sonnet-5, label: "Claude Sonnet 5", tier: forte, description: "..." }
  * </pre>
  *
- * @param allowAny desliga a validação por allow-list (útil p/ ids específicos da conta)
- * @param liveSync habilita a descoberta ao vivo dos modelos da conta (GET /v1/models)
- * @param baseUrl  base da API da Anthropic para a descoberta ao vivo
+ * @param provider qual {@link ModelDiscoveryClient} atende a descoberta ao vivo
+ * @param allowAny desliga a validação por allow-list (útil quando o proxy publica muitos aliases)
+ * @param liveSync habilita a descoberta ao vivo dos modelos do backend
+ * @param baseUrl  base do backend de descoberta (o proxy LiteLLM, ou a API da Anthropic)
  * @param cacheTtl TTL do cache da lista ao vivo
  * @param catalog  a allow-list curada e versionada
  */
 @ConfigurationProperties(prefix = "app.models")
 public record ModelsProperties(
+        @DefaultValue("litellm") String provider,
         @DefaultValue("false") boolean allowAny,
         @DefaultValue("true") boolean liveSync,
-        @DefaultValue("https://api.anthropic.com") String baseUrl,
+        @DefaultValue("http://localhost:4000") String baseUrl,
         @DefaultValue("PT30M") Duration cacheTtl,
         @DefaultValue List<Entry> catalog) {
 
     /** Uma entrada da allow-list. */
-    public record Entry(String id, String label, String tier, String description) {
+    public record Entry(String id, String label, String tier, String description, String provider) {
     }
 }

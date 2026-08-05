@@ -9,6 +9,9 @@ import type {
   IngestionResult,
   ModelInfo,
   ProblemDetail,
+  SecurityControlsResponse,
+  SecurityEvaluationReport,
+  SecurityScenario,
 } from './types';
 
 const BASE = '/api/v1';
@@ -17,11 +20,16 @@ const BASE = '/api/v1';
 export class ApiError extends Error {
   readonly status: number;
   readonly title?: string;
+  /** Estágio e controles do 422 de guardrail (M04); vazios nos demais erros. */
+  readonly stage?: string;
+  readonly controls: string[];
 
   constructor(status: number, problem?: ProblemDetail) {
     super(problem?.detail ?? problem?.title ?? `HTTP ${status}`);
     this.status = status;
     this.title = problem?.title;
+    this.stage = problem?.stage;
+    this.controls = problem?.controls ?? [];
   }
 }
 
@@ -92,6 +100,33 @@ export async function runQualityGate(componentId: string): Promise<GateReport> {
   const res = await fetch(`${BASE}/quality/${componentId}/gate`, { method: 'POST' });
   if (res.status === 200 || res.status === 422) {
     return (await res.json()) as GateReport;
+  }
+  let problem: ProblemDetail | undefined;
+  try {
+    problem = (await res.json()) as ProblemDetail;
+  } catch {
+    /* ignore */
+  }
+  throw new ApiError(res.status, problem);
+}
+
+// ---------- Segurança (M04) ----------
+
+export const securityControls = () =>
+  request<SecurityControlsResponse>(`${BASE}/security/controls`);
+
+export const securityScenarios = () =>
+  request<SecurityScenario[]>(`${BASE}/security/scenarios`);
+
+/**
+ * 200 quando a execução fica limpa (nenhum legítimo barrado, nenhum ataque passou) e 422 quando
+ * não — mesmo padrão do quality gate: os dois trazem o relatório, porque "reprovou" sem "por
+ * que reprovou" não serve para decidir nada.
+ */
+export async function evaluateSecurity(): Promise<SecurityEvaluationReport[]> {
+  const res = await fetch(`${BASE}/security/evaluate`, { method: 'POST' });
+  if (res.status === 200 || res.status === 422) {
+    return (await res.json()) as SecurityEvaluationReport[];
   }
   let problem: ProblemDetail | undefined;
   try {

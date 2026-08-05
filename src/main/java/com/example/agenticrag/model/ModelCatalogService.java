@@ -11,20 +11,23 @@ import java.util.Map;
  * Fonte única para a seleção de modelos (governança — A05). Concilia:
  * <ul>
  *   <li>o <b>catálogo</b> (allow-list versionada em config) — determinístico, offline;</li>
- *   <li>a <b>descoberta ao vivo</b> ({@code /v1/models} da conta) — ids exatos e atuais.</li>
+ *   <li>a <b>descoberta ao vivo</b> ({@link ModelDiscoveryClient}) — o que o backend realmente
+ *       publica. Com o gateway LiteLLM isso é multi-provedor: Claude, GPT, Gemini, Llama... na
+ *       mesma lista.</li>
  * </ul>
  *
  * <p>Discovery ({@link #available()}) mostra os dois; a validação ({@link #resolve}) da seleção
  * manual usa o catálogo + o cache ao vivo (sem forçar rede a cada chamada). O flag
- * {@code app.models.allow-any} é a válvula de escape para contas com ids fora do catálogo.
+ * {@code app.models.allow-any} é a válvula de escape quando o proxy publica mais aliases do que
+ * faz sentido versionar no catálogo.
  */
 @Service
 public class ModelCatalogService {
 
     private final ModelsProperties props;
-    private final AnthropicModelsClient live;
+    private final ModelDiscoveryClient live;
 
-    public ModelCatalogService(ModelsProperties props, AnthropicModelsClient live) {
+    public ModelCatalogService(ModelsProperties props, ModelDiscoveryClient live) {
         this.props = props;
         this.live = live;
     }
@@ -47,7 +50,7 @@ public class ModelCatalogService {
     public List<ModelInfo> catalog() {
         List<ModelInfo> out = new ArrayList<>();
         for (ModelsProperties.Entry e : props.catalog()) {
-            out.add(new ModelInfo(e.id(), e.label(), e.tier(), e.description(), "catalog"));
+            out.add(new ModelInfo(e.id(), e.label(), e.tier(), e.description(), "catalog", e.provider()));
         }
         return out;
     }

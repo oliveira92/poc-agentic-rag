@@ -38,7 +38,13 @@ public abstract class AbstractIntegrationTest {
     }
 
     @DynamicPropertySource
-    static void datasourceProps(DynamicPropertyRegistry registry) {
+    static void testProps(DynamicPropertyRegistry registry) {
+        // Embedding pelo caminho LOCAL, não pelo gateway (que é o padrão da aplicação).
+        // Teste de integração não deve depender de chave de vendor nem de rede por embedding:
+        // seria lento, caro e falharia por motivo que não é o do teste. O caminho de produção
+        // é exercitado subindo a app; aqui o que se verifica é ingestão, recuperação e schema.
+        registry.add("spring.ai.model.embedding", () -> "transformers");
+
         if (USE_EXTERNAL) {
             registry.add("spring.datasource.url", () -> EXTERNAL_URL);
             registry.add("spring.datasource.username", () -> System.getProperty("it.datasource.username", "rag"));

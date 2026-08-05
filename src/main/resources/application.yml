@@ -17,7 +17,52 @@ spring:
     baseline-on-migrate: true
 
   ai:
-    # ---------- Chat model: Anthropic Claude ----------
+    # ---------- Qual auto-config de modelo vale ----------
+    # 'openai' = falamos com o GATEWAY LiteLLM (API OpenAI-compatível) => acesso a TODOS os
+    # provedores publicados no proxy. 'anthropic' = caminho direto da Fase 1 (um vendor só).
+    # 'embedding: transformers' é OBRIGATÓRIO aqui: as duas auto-configs de embedding têm
+    # matchIfMissing=true e, com o starter openai no classpath, brigariam pelo bean.
+    model:
+      chat: ${APP_LLM_PROVIDER:openai}
+      # PADRÃO: embedding pelo GATEWAY LiteLLM. Nenhum modelo dentro do processo — a app sobe em
+      # ~3s, não baixa nada e não carrega 112 MB de ONNX na memória. É também o caminho de melhor
+      # qualidade: o peso local que cabia no disco é quantizado, e a quantização custa recall
+      # medido (2/3 vs 3/3 em QuantizationFidelityTest).
+      #
+      # FALLBACK: 'transformers' volta ao ONNX local — offline, sem chave e sem custo por
+      # chamada. É o que CI e testes usam, e a saída para quem não pode mandar texto para fora.
+      embedding: ${APP_EMBEDDING_PROVIDER:openai}
+
+    # ---------- Chat via LiteLLM (padrão, multi-provedor) ----------
+    openai:
+      # base-url do proxy LiteLLM (docker compose --profile llm up -d litellm).
+      base-url: ${LITELLM_BASE_URL:http://localhost:4000}
+      # LITELLM_MASTER_KEY do proxy (não é a chave do vendor: as chaves dos provedores ficam
+      # SÓ no proxy — a app nunca vê credencial de vendor). Placeholder deixa o contexto subir.
+      api-key: ${LITELLM_API_KEY:not-set}
+      chat:
+        options:
+          # Alias publicado no proxy (model_name do litellm/config.yaml), não o id do vendor.
+          model: ${LITELLM_CHAT_MODEL:claude-sonnet-5}
+          # Claude 5 tem thinking adaptativo que CONTA no orçamento de saída. Com o default
+          # de 4096 do Spring AI, perguntas complexas queimavam tudo "pensando" e o texto
+          # saía VAZIO (finish=length — a falha silenciosa da A01; diagnosticada ao vivo:
+          # output_tokens=4096 exatos + resposta 0 chars). Teto maior dá folga p/ pensar E responder.
+          max-completion-tokens: ${LLM_MAX_TOKENS:16384}
+
+      # Embedding pelo gateway (padrão). 'dimensions: 384' é o que mantém o schema do pgvector
+      # intacto: text-embedding-3-* suporta encurtar o vetor (Matryoshka) sem retreinar, então
+      # trocar o backend de embedding NÃO exigiu migração de coluna.
+      #
+      # O que exige, sempre, é REINGESTÃO: vetores de modelos diferentes não são comparáveis,
+      # mesmo com a mesma dimensão. É por isso que 'app.embedding.model-id' abaixo acompanha
+      # este valor — ele entra no hash de idempotência e força o re-embed sozinho.
+      embedding:
+        options:
+          model: ${LITELLM_EMBEDDING_MODEL:text-embedding-3-small}
+          dimensions: 384
+
+    # ---------- Chat direto na Anthropic (fallback: APP_LLM_PROVIDER=anthropic) ----------
     anthropic:
       # placeholder permite o contexto subir sem chave (ingestão/recuperação funcionam);
       # só as chamadas de chat (advise) falham até você configurar a chave real.
@@ -25,26 +70,18 @@ spring:
       chat:
         options:
           # Spring AI 2.0 NÃO envia mais um 'temperature' default — então a família Claude 5
-          # (que deprecou o parâmetro) volta a funcionar. Use um id EXATO da sua conta
-          # (GET /v1/models). Para forçar temperature, adicione: temperature: 0.2
+          # (que deprecou o parâmetro) volta a funcionar. Use um id EXATO da sua conta.
           model: ${ANTHROPIC_CHAT_MODEL:claude-sonnet-5}
-          # Claude 5 tem thinking adaptativo que CONTA no orçamento de saída. Com o default
-          # de 4096 do Spring AI, perguntas complexas queimavam tudo "pensando" e o texto
-          # saía VAZIO (finish=length — a falha silenciosa da A01; diagnosticada ao vivo:
-          # output_tokens=4096 exatos + resposta 0 chars). Teto maior dá folga p/ pensar E responder.
-          max-tokens: ${ANTHROPIC_MAX_TOKENS:16384}
+          max-tokens: ${LLM_MAX_TOKENS:16384}
 
     # ---------- Embeddings locais MULTILÍNGUES (ONNX) ----------
     # paraphrase-multilingual-MiniLM-L12-v2: bom em PT-BR e ainda 384 dims
     # (mesma dimensão do MiniLM inglês => NÃO precisa migrar o schema).
     # Baixado do HuggingFace na 1ª subida e cacheado localmente.
-    embedding:
-      transformer:
-        onnx:
-          model-uri: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model.onnx
-          model-output-name: last_hidden_state
-        tokenizer:
-          uri: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json
+    # A configuração do embedding local vive em app.embedding (LocalOnnxEmbeddingConfig), que
+    # resolve ARQUIVO primeiro e rede só como fallback. As chaves spring.ai.embedding.transformer.*
+    # ficam de fora de propósito: elas só sabem baixar, e é justamente o download no boot que
+    # este projeto precisa evitar. Ver ADR-0009.
 
     # ---------- Vector store pgvector (memória de LONGO prazo) ----------
     vectorstore:
@@ -97,23 +134,164 @@ management:
 
 # ---------- App ----------
 app:
+  # ---------- Embeddings ----------
+  # Padrão: gateway (ver spring.ai.model.embedding). As chaves abaixo configuram o FALLBACK
+  # local (APP_EMBEDDING_PROVIDER=transformers), usado por CI, testes e operação offline.
+  # Ver ADR-0009 e scripts/prefetch-embeddings.sh.
   embedding:
-    # Id lógico do modelo de embeddings. É incluído no hash de idempotência: ao trocar
-    # o modelo (aqui e no bloco spring.ai.embedding), este id muda e força a re-ingestão
-    # (re-embed), evitando misturar vetores de modelos diferentes na mesma tabela.
-    model-id: ${APP_EMBEDDING_MODEL_ID:paraphrase-multilingual-MiniLM-L12-v2}
+    # Id lógico do modelo. Entra no hash de idempotência da ingestão: mudá-lo força re-embed,
+    # que é o que impede vetores de modelos (ou precisões) diferentes de conviverem na tabela.
+    # Precisa acompanhar o backend em uso — daí o default ser o do gateway.
+    model-id: ${APP_EMBEDDING_MODEL_ID:text-embedding-3-small-384}
+
+    # --- daqui para baixo, só vale no fallback local (APP_EMBEDDING_PROVIDER=transformers) ---
+    # NUNCA java.io.tmpdir: é o default do Spring AI e é purgado pelo macOS, some no reboot e
+    # não existe em contêiner — era por isso que "baixa uma vez" era, na prática, a cada boot frio.
+    cache-dir: ${EMBEDDING_CACHE_DIR:${user.home}/.cache/agentic-rag/onnx}
+    model-file: model_quantized.onnx
+    tokenizer-file: tokenizer.json
+
+    # Fallback remoto. Aponte para um mirror interno (Nexus/Artifactory/S3) se tiver um: o
+    # formato é só um arquivo por HTTP, não há nada específico do HuggingFace aqui.
+    model-url: ${EMBEDDING_MODEL_URL:https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/onnx/model_quantized.onnx}
+    tokenizer-url: ${EMBEDDING_TOKENIZER_URL:https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer.json}
+    model-output-name: last_hidden_state
+
+    # true = cache frio vira erro com o comando de correção, em vez de um boot de 11 minutos.
+    # Ligue em CI e em contêiner, onde cache frio é defeito de pipeline e não imprevisto.
+    require-local: ${EMBEDDING_REQUIRE_LOCAL:false}
 
   # ---------- M03 · Camada 5 (Governança): roteamento por risco/custo ----------
   # "Aliases de negócio → modelo real" (A05). Roteamento por CUSTO ativo: FAQ/baixo risco vai
   # para o Haiku (barato/rápido) e as rotas de risco (pagamento/auth/erro) ficam no Sonnet forte,
   # com SLO de groundedness mais rígido. É o gráfico "−44%" da aula — o forte só onde o risco pede.
   # (Medido na PoC: FAQ→Haiku ~15× mais barato e ~7× mais rápido que risco→Sonnet.)
+  # Os ids abaixo são ALIASES do proxy LiteLLM (model_name em litellm/config.yaml) — não ids de
+  # vendor. É o que torna o roteamento realmente multi-provedor: dá para mandar a rota barata
+  # para um Gemini/Llama e manter a rota de risco no Claude, mudando só config.
   routing:
     strong-model: ${APP_ROUTING_STRONG_MODEL:claude-sonnet-5}                 # HIGH: pagamento/auth/erro
     default-model: ${APP_ROUTING_DEFAULT_MODEL:claude-sonnet-5}               # MEDIUM: integração geral
-    fast-model: ${APP_ROUTING_FAST_MODEL:claude-haiku-4-5-20251001}           # LOW: FAQ/conceitual
+    fast-model: ${APP_ROUTING_FAST_MODEL:claude-haiku-4-5}                    # LOW: FAQ/conceitual
     threshold-high: 0.90       # SLO de groundedness da rota de risco (jurídico/pagamento)
     threshold-default: 0.80
+
+  # ================= M04 · Segurança: guardrails FORA do system prompt =================
+  # Toda a política mora aqui, em config versionada — não em prosa dentro do prompt.
+  # Ler este bloco responde "o que acontece com um CPF na pergunta?" sem abrir código Java,
+  # e endurecer a política em produção (MASK -> BLOCK) não exige recompilar.
+  security:
+    enabled: ${APP_SECURITY_ENABLED:true}     # false = LINHA DE BASE (só para medir o dataset)
+    fail-mode: ${APP_SECURITY_FAIL_MODE:closed}   # closed = falha de controle bloqueia
+    max-question-chars: 4000
+    max-document-chars: 400000
+    # lexical = determinístico, roda no CI e na demo sem chave.
+    # llm     = juiz que "entende o conteúdo ingerido" (requer o gateway configurado).
+    scope-judge: ${APP_SECURITY_SCOPE_JUDGE:lexical}
+
+    # Domínios internos aceitos pelo SEC-05 na entrada. Este agente atende DESENVOLVEDOR, e
+    # desenvolvedor cola link o tempo todo (portal, repositório, issue): bloquear toda URL teria
+    # recall perfeito e um custo que ninguém aceita na segunda semana. A allow-list casa por
+    # sufixo de rótulo, então 'portal.example.com' libera 'docs.portal.example.com' mas NÃO
+    # 'portal.example.com.evil.io'. Lista vazia = bloqueia toda URL (postura estrita).
+    url-allowlist:
+      - portal.example.com
+      - git.example.com
+
+    # Ação por (estágio, categoria). MASK preserva o caso legítimo; BLOCK interrompe.
+    actions:
+      input:
+        binary: BLOCK              # SEC-01 .pdf/.png coladas na pergunta
+        pii: MASK                  # SEC-02 CPF/telefone do próprio titular: ofusca e responde
+        secret: MASK               # SEC-03 token colado sem querer: ofusca e responde
+        prompt-injection: BLOCK    # SEC-04
+        url: BLOCK                 # SEC-05
+        third-party-pii: BLOCK     # SEC-06 dado de terceiro
+        out-of-scope: BLOCK        # SEC-07
+        oversize: BLOCK            # SEC-08
+        resource-ownership: BLOCK  # SEC-10 recurso que não é do requisitante
+      output:
+        pii: MASK                  # SEC-02 ofusca o que vazou pela base
+        secret: MASK               # SEC-03
+        system-prompt-leak: BLOCK  # SEC-09 extração de instruções bem-sucedida
+      ingestion:
+        binary: BLOCK              # SEC-01 documento binário não vira embedding
+        pii: BLOCK                 # SEC-02 na ingestão o erro é permanente: não mascara, recusa
+        secret: BLOCK              # SEC-03
+        prompt-injection: BLOCK    # SEC-04 injeção indireta via README de terceiro
+        out-of-scope: BLOCK        # SEC-07 a "receita de bolo" do enunciado
+        oversize: BLOCK            # SEC-08
+        # url fica ALLOW (ausente): README tem link por natureza e a base não é buscada na web.
+
+    scope:
+      # Vocabulário-base do agente. O vocabulário específico de cada componente vem do
+      # ScopeContext (registro do componente), então esta lista fica curta de propósito.
+      domain-terms:
+        - endpoint
+        - autentica
+        - idempot
+        - integra
+        - componente
+        - rate limit
+        - webhook
+        - payload
+      # Tarefas que o agente não executa, mesmo quando a pergunta usa o vocabulário do domínio.
+      # Escritas sem acento: são comparadas contra o texto normalizado (TextFold).
+      off-task-patterns:
+        - "(?:escrev|redij|compo|crie|faca)\\w*\\s+(?:\\w+\\s+){0,2}(?:poema|poesia|conto|piada|musica|letra|redacao|cronica)"
+        - "(?:orientacao|parecer|consultoria|aconselhamento|opiniao)\\s+(?:juridic|medic|financeir|contabil)"
+        - "(?:vale\\s+a\\s+pena|devo|posso)\\s+(?:\\w+\\s+){0,3}(?:processar|acionar\\s+judicialmente|entrar\\s+na\\s+justica)"
+        # Comparação/recomendação de concorrente. 'sdk' NÃO entra na lista de substantivos: o
+        # próprio componente se chama payments-sdk, e "o endpoint do payments-sdk é melhor que
+        # o de estorno?" é pergunta técnica legítima — o padrão barraria trabalho de verdade.
+        - "(?:seguradora|empresa|fornecedor|concorrente|banco|plano|produto|biblioteca|framework|ferramenta)s?\\s+(?:\\w+\\s+){0,4}(?:melhor|pior)\\s+(?:que|do\\s+que)"
+        - "(?:melhor|pior)\\s+(?:seguradora|empresa|fornecedor|concorrente|banco|plano|biblioteca|framework|ferramenta)"
+        # O sinal de "me recomende um concorrente" é o MERCADO, não o adjetivo: é o que pega
+        # "qual SDK do mercado é melhor que o nosso" sem depender do substantivo.
+        - "(?:do\\s+mercado|no\\s+mercado|concorrente|da\\s+concorrencia|outro\\s+fornecedor)\\s+(?:\\w+\\s+){0,5}(?:melhor|pior|recomend|vale\\s+mais)"
+        - "(?:melhor|pior|recomend\\w*|indic\\w*|sugir\\w*)\\s+(?:\\w+\\s+){0,5}(?:do\\s+mercado|no\\s+mercado|da\\s+concorrencia|de\\s+outro\\s+fornecedor)"
+        - "(?:receita|modo\\s+de\\s+preparo)\\s+(?:de|do|da)\\s+\\w+"
+
+  # ---------- M04 · Dataset de segurança e os cenários em que ele roda ----------
+  # Um cenário dá ao controle os dois insumos que ele não tem como adivinhar: o que a base
+  # contém (moldura do juiz de escopo) e quem está perguntando (insumo da autorização). É o
+  # mesmo par que a aplicação real monta a partir do registro de ingestão e do usuário logado.
+  #
+  # São DOIS cenários de propósito: 'componentes' é o domínio desta PoC e 'a05-seguros' é o
+  # dataset da atividade A05. Mesmos controles, mesmos arquétipos de ataque, dois domínios,
+  # zero código específico de domínio — é essa comparação que sustenta a afirmação.
+  security-dataset:
+    default-scenario: ${APP_SECURITY_DATASET:componentes}
+    scenarios:
+      - name: componentes
+        label: "Component Advisor (payments-sdk)"
+        resource: classpath:security/dataset-componentes.csv
+        summary: >-
+          Payments SDK (payments-sdk): SDK de pagamentos da plataforma — criação de cobranças
+          (POST /v2/charges), consulta de status, estorno total ou parcial, autenticação por
+          Bearer token, idempotência via header Idempotency-Key, rate limiting por token,
+          webhook de notificação e erros no padrão RFC 7807. Documentação: overview do portal,
+          endpoints e README com seções de autenticação, idempotência, rate limiting e erros.
+        # Identidade do requisitante: habilita o SEC-10 (autorização a nível de objeto).
+        # A cobrança chg_9f2a1c do caso A-05 NÃO está aqui — é dela que a pergunta trata.
+        subject-id: "dev-plataforma-01"
+        owned-resources:
+          - chg_a1b2c3
+          - cus_123
+
+      - name: a05-seguros
+        label: "Atendimento ao segurado (A05)"
+        resource: classpath:security/dataset-a05.csv
+        summary: >-
+          Base de conhecimento de atendimento ao segurado: consulta de sinistro (situação,
+          prazos, análise, documentos exigidos), apólice e coberturas contratadas, franquia e
+          valores, dados de cadastro do titular (telefone e e-mail registrados para contato)
+          e canais de atendimento.
+        # O sinistro SIN-8802 do caso A-05 NÃO está aqui — é dele que a pergunta trata.
+        subject-id: "titular-001"
+        owned-resources:
+          - SIN-4410
+          - APOL-99321
 
   # ---------- M03 · Camada 3 (Qualidade): juiz de groundedness ----------
   quality:
@@ -130,41 +308,68 @@ app:
   cost:
     currency: ${APP_COST_CURRENCY:USD}
     per-family:
-      haiku:  { input: 0.001, output: 0.005 }
+      haiku: { input: 0.001, output: 0.005 }
       sonnet: { input: 0.003, output: 0.015 }
-      opus:   { input: 0.015, output: 0.075 }
+      opus: { input: 0.015, output: 0.075 }
+      # Com o gateway a lista deixa de ser só Claude — o custo por família precisa acompanhar,
+      # senão a comparação de rotas/modelos entre vendors mente (A04). A chave mais LONGA vence
+      # (ver CostProperties), então gpt-4o-mini não é cobrado ao preço do gpt-4o.
+      gpt-4o: { input: 0.0025, output: 0.01 }
+      gpt-4o-mini: { input: 0.00015, output: 0.0006 }
+      gemini: { input: 0.0001, output: 0.0004 }
+      llama: { input: 0.0002, output: 0.0002 }
     # fallback global quando nenhuma família casa (0 = não estima)
     input-per-1k: ${APP_COST_INPUT_PER_1K:0.0}
     output-per-1k: ${APP_COST_OUTPUT_PER_1K:0.0}
 
-  # ---------- Seleção de modelos Anthropic (governança de modelo — A05) ----------
+  # ---------- Seleção de modelos MULTI-PROVEDOR via LiteLLM (governança de modelo — A05) --------
   # O catálogo é a allow-list VERSIONADA de modelos que o /advise aceita no campo "model".
-  # Com live-sync=true, GET /api/v1/models também lista os modelos REAIS da conta
-  # (Anthropic /v1/models) — a fonte da verdade dos ids exatos. allow-any=true desliga a
-  # validação (para contas com ids fora do catálogo). Os ids abaixo são os padrões atuais;
-  # ajuste para os ids exatos da SUA conta (a listagem ao vivo mostra quais existem).
+  # Com live-sync=true, GET /api/v1/models também lista o que o GATEWAY realmente publica
+  # (LiteLLM /model/info, com fallback /v1/models) — inclusive de outros vendors.
+  # allow-any=true desliga a validação (proxy com muitos aliases). Os ids abaixo são os ALIASES
+  # do litellm/config.yaml deste repo — ajuste se o seu proxy publica outros nomes.
   models:
+    provider: ${APP_MODELS_PROVIDER:litellm}     # litellm | anthropic (direto, sem gateway)
     allow-any: ${APP_MODELS_ALLOW_ANY:false}
     live-sync: ${APP_MODELS_LIVE_SYNC:true}
-    base-url: ${APP_MODELS_BASE_URL:https://api.anthropic.com}
+    base-url: ${APP_MODELS_BASE_URL:${LITELLM_BASE_URL:http://localhost:4000}}
     cache-ttl: ${APP_MODELS_CACHE_TTL:PT30M}
     catalog:
       - id: claude-opus-4-8
         label: "Claude Opus 4.8"
         tier: forte
+        provider: anthropic
         description: "Máxima capacidade — análise difícil, rotas de risco alto."
       - id: claude-sonnet-5
         label: "Claude Sonnet 5"
         tier: forte
+        provider: anthropic
         description: "Forte e equilibrado — default para integração e risco."
-      - id: claude-sonnet-4-5
-        label: "Claude Sonnet 4.5"
-        tier: default
-        description: "Geração anterior do Sonnet — aceita 'temperature'."
       - id: claude-haiku-4-5
         label: "Claude Haiku 4.5"
         tier: rapido
+        provider: anthropic
         description: "Rápido e barato — FAQ/atendimento de baixo risco."
+      - id: gpt-4o
+        label: "GPT-4o"
+        tier: forte
+        provider: openai
+        description: "Alternativa forte fora da Anthropic — útil para comparar respostas."
+      - id: gpt-4o-mini
+        label: "GPT-4o mini"
+        tier: rapido
+        provider: openai
+        description: "Barato e rápido — bom candidato para a rota de FAQ."
+      - id: gemini-2.0-flash
+        label: "Gemini 2.0 Flash"
+        tier: rapido
+        provider: gemini
+        description: "Rápido e barato no Google — contexto longo."
+      - id: llama-3.3-70b
+        label: "Llama 3.3 70B"
+        tier: default
+        provider: groq
+        description: "Modelo aberto — cenário de dado sensível que não pode sair para vendor fechado."
 
 # ---------- Portal de componentes (ACL) ----------
 component:

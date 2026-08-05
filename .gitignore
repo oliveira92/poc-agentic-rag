@@ -14,9 +14,12 @@ target/
 ### OS ###
 .DS_Store
 
-### Spring AI transformers cache (modelos ONNX baixados) ###
+### Modelos ONNX de embedding ###
+# O cache real fica FORA do repo (~/.cache/agentic-rag/onnx) para sobreviver a reboot e ser
+# compartilhado entre clones. Estes são resquícios do default antigo do Spring AI.
 .spring-ai/
 onnx-model-cache/
+.models/
 
 # frontend (UI React)
 frontend/node_modules/

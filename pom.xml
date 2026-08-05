@@ -77,7 +77,18 @@
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
-        <!-- Spring AI: Chat model (Anthropic Claude) -->
+        <!-- Spring AI: Chat model via GATEWAY LiteLLM (padrão).
+             LiteLLM expõe uma API OpenAI-compatível (/v1/chat/completions, /v1/models), então o
+             starter "openai" apontado para o proxy dá acesso a TODOS os provedores que o LiteLLM
+             suporta (Anthropic, OpenAI, Gemini, Bedrock, Groq, Ollama...) sem trocar de client.
+             Qual auto-config vale é decidido por 'spring.ai.model.chat' (openai|anthropic). -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+
+        <!-- Spring AI: Chat model Anthropic DIRETO (fallback sem gateway, spring.ai.model.chat=anthropic).
+             Mantido para não perder o caminho "sem infra extra" da Fase 1. -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-anthropic</artifactId>

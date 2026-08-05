@@ -1,10 +1,15 @@
 package com.example.agenticrag.ingestion;
 
 import com.example.agenticrag.domain.model.ComponentDetails;
+import com.example.agenticrag.embedding.EmbeddingProperties;
 import com.example.agenticrag.domain.model.ComponentEndpoint;
 import com.example.agenticrag.domain.model.KnowledgeSource;
 import com.example.agenticrag.domain.port.ComponentPortalPort;
 import com.example.agenticrag.infra.persistence.ComponentRegistryRepository;
+import com.example.agenticrag.security.GuardDecision;
+import com.example.agenticrag.security.GuardrailViolationException;
+import com.example.agenticrag.security.IngestionGuard;
+import com.example.agenticrag.security.scope.ScopeContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -39,19 +44,21 @@ public class ComponentIngestionService {
     private final VectorStore vectorStore;
     private final ComponentRegistryRepository registry;
     private final MarkdownChunker chunker;
+    private final IngestionGuard guard;
     private final String embeddingModelId;
 
     public ComponentIngestionService(ComponentPortalPort portal,
                                      VectorStore vectorStore,
                                      ComponentRegistryRepository registry,
                                      MarkdownChunker chunker,
-                                     @org.springframework.beans.factory.annotation.Value(
-                                             "${app.embedding.model-id:unknown}") String embeddingModelId) {
+                                     IngestionGuard guard,
+                                     EmbeddingProperties embedding) {
         this.portal = portal;
         this.vectorStore = vectorStore;
         this.registry = registry;
         this.chunker = chunker;
-        this.embeddingModelId = embeddingModelId;
+        this.guard = guard;
+        this.embeddingModelId = embedding.modelId();
     }
 
     public IngestionResult ingestFromPortal(String componentId) {
@@ -77,6 +84,17 @@ public class ComponentIngestionService {
         String componentId = details.id();
         List<Document> docs = new ArrayList<>();
 
+        // 0) M04 — o README é a fonte NÃO CONFIÁVEL desta ingestão (vem de fora do portal, pode
+        //    ter sido editado por qualquer um). Vai ao guard ANTES do chunking: assunto e
+        //    segredo se avaliam no documento inteiro, não em pedaços de 800 caracteres, e um
+        //    documento reprovado não deve nem chegar a virar chunk.
+        //    A moldura de escopo vem do PORTAL (metadado estruturado, fonte de verdade) — é o
+        //    que permite reprovar a "receita de bolo" enviada como README de um SDK de pagamentos.
+        ScopeContext scope = new ScopeContext(componentId,
+                details.name() + ": " + nz(details.description()) + " " + String.join(" ", details.tags()),
+                details.endpoints().stream().map(e -> nz(e.method()) + " " + nz(e.path())).toList());
+        String safeReadme = requireSafe(readme, scope, "README de " + componentId);
+
         // 1) Overview estruturado
         docs.add(doc(overviewText(details), Map.of(
                 KnowledgeSource.METADATA_KEY, KnowledgeSource.PORTAL_API.name(),
@@ -96,10 +114,10 @@ public class ComponentIngestionService {
         }
         int endpointsIndexed = details.endpoints().size();
 
-        // 3) README chunked por seção
+        // 3) README chunked por seção (já sanitizado no passo 0)
         int readmeChunks = 0;
-        if (readme != null && !readme.isBlank()) {
-            for (MarkdownChunker.Chunk c : chunker.chunk(readme)) {
+        if (safeReadme != null && !safeReadme.isBlank()) {
+            for (MarkdownChunker.Chunk c : chunker.chunk(safeReadme)) {
                 docs.add(doc(c.text(), Map.of(
                         KnowledgeSource.METADATA_KEY, KnowledgeSource.README.name(),
                         "component_id", componentId,
@@ -110,25 +128,70 @@ public class ComponentIngestionService {
             }
         }
 
-        // 4) Idempotência: hash do conteúdo + id do modelo de embeddings. Se nada mudou,
+        // 4) M04 — bateria por documento (sem escopo: o portal É a definição de escopo, medir o
+        //    portal contra si mesmo não diria nada). Pega o que o passo 0 não pega: um segredo
+        //    colado no schema de exemplo de um endpoint viraria embedding, e o RAG passaria a
+        //    distribuí-lo com citação para quem perguntasse.
+        docs = sanitize(docs, componentId);
+
+        // 5) Idempotência: hash do conteúdo + id do modelo de embeddings. Se nada mudou,
         //    não reprocessa; se o modelo mudou, o hash muda e força o re-embed.
+        //    O hash é do conteúdo JÁ SANITIZADO — senão, mudar a política de segurança não
+        //    forçaria a re-ingestão e o índice ficaria com o texto da política antiga.
         String hash = contentHash(docs, embeddingModelId);
         if (registry.findSourceHash(componentId).filter(hash::equals).isPresent()) {
             log.info("Ingestão de {} pulada (conteúdo inalterado, hash={}).", componentId, hash);
             return new IngestionResult(componentId, endpointsIndexed, readmeChunks, 0, true);
         }
 
-        // 5) Refresh: apaga fontes primárias antigas, preserva conhecimento aprovado.
+        // 6) Refresh: apaga fontes primárias antigas, preserva conhecimento aprovado.
         vectorStore.delete("component_id == '" + safe(componentId)
                 + "' && " + KnowledgeSource.METADATA_KEY + " != '" + KnowledgeSource.LLM_APPROVED.name() + "'");
 
-        // 6) Embeddings + gravação no pgvector
+        // 7) Embeddings + gravação no pgvector
         vectorStore.add(docs);
         registry.upsert(componentId, details.name(), details.version(), details.description(), hash);
 
         log.info("Ingerido {}: {} endpoints, {} chunks de README, {} docs.",
                 componentId, endpointsIndexed, readmeChunks, docs.size());
         return new IngestionResult(componentId, endpointsIndexed, readmeChunks, docs.size(), false);
+    }
+
+    // ---------- guardrails de ingestão (M04) ----------
+
+    /**
+     * Roda o guard e devolve o texto que pode ser indexado.
+     *
+     * @throws GuardrailViolationException quando a política manda recusar — a ingestão inteira
+     *                                     falha, e é intencional: aceitar "o resto" de um
+     *                                     documento reprovado deixaria a base num estado que
+     *                                     ninguém revisou e cujo hash não corresponde à fonte.
+     */
+    private String requireSafe(String content, ScopeContext scope, String what) {
+        if (content == null || content.isBlank()) {
+            return content;
+        }
+        GuardDecision decision = guard.inspect(content, scope);
+        if (decision.blocked()) {
+            log.warn("Ingestão recusada ({}): controles {}", what, decision.controlIds());
+            throw new GuardrailViolationException(decision);
+        }
+        if (decision.masked()) {
+            log.info("Ingestão sanitizada ({}): controles {}", what, decision.controlIds());
+        }
+        return decision.text();
+    }
+
+    /** Mesma bateria por documento, sem o juiz de escopo. */
+    private List<Document> sanitize(List<Document> docs, String componentId) {
+        List<Document> out = new ArrayList<>(docs.size());
+        for (Document d : docs) {
+            String safe = requireSafe(d.getText(), null, "documento de " + componentId);
+            out.add(safe != null && safe.equals(d.getText())
+                    ? d
+                    : Document.builder().text(safe).metadata(d.getMetadata()).build());
+        }
+        return out;
     }
 
     // ---------- helpers ----------
