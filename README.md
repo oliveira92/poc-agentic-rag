@@ -86,6 +86,9 @@ flowchart LR
 
 Misturar as duas polui a recuperação; por isso são tabelas e mecanismos distintos.
 
+O descritivo completo das tabelas, campos, índices e chaves de `metadata` está em
+[docs/MODELO-DE-DADOS.md](docs/MODELO-DE-DADOS.md).
+
 ---
 
 ## Decisões de engenharia (o porquê)
